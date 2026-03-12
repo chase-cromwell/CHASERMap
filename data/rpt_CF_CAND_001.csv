@@ -1,0 +1,56 @@
+﻿JurisdictionSelection,ElectionYear,OfficeSelection,DistrictSelection,ActiveOnlySelection
+STATEWIDE,2026,Colorado Senate,ALL,All Statuses
+
+JurisdictionName,ElectionYear1,OfficeName,DistrictName,CandidateName,Textbox9,Textbox13,AcceptedVSL,OrganizationStatus
+STATEWIDE,2026,Colorado Senate,Senate District 21,"ALFRED, FREDERICK",Republican,FRED FOR SD21,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 31,"BALL, MATT",Democratic,MATT BALL FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 01,"BARRY, MICHAEL",Unknown,None,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 21,"BENAVIDEZ, ADRIENNE",Democratic,None,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 25,"BIRD, SHANNON",Democratic,BIRD FOR COLORADO,No,Terminated
+STATEWIDE,2026,Colorado Senate,Senate District 25,"BROMLEY, MARK",Unaffiliated,VOTE BROMLEY A.K.A. MARK BROMLEY,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 34,"CARRERA, ANDRÉS",Democratic,CARRERA FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 30,"CARSON, JOHN",Republican,CARSON FOR STATE SENATE,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 09,"CARVER, TERRI",Republican,CARVER FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 03,"CHARLES, DANA",Republican,DANA CHARLES FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 04,"COLLINS III, TED (TEDDY)",Republican,COLLINS FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 04,"CONRAD, KEVIN",Republican,CITIZENS TO ELECT KEVIN CONRAD,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 22,"DANIELSON, JESSIE",Democratic,JESSIE DANIELSON FOR COLORADO,No,Terminated
+STATEWIDE,2026,Colorado Senate,Senate District 22,"DURAN, MONICA",Democratic,DURAN FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 11,"EXUM, THOMAS",Democratic,ELECT THOMAS TONY EXUM,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 34,"GARCIA IRLANDO, GRACIELA",Democratic,CHELA FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 03,"GUTIERREZ, AARON",Democratic,AARON GUTIERREZ FOR PUEBLO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 34,"GUZMAN, MICHAEL",Democratic,MICHAEL GUZMAN FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 03,"HINRICHSEN, NICK",Democratic,COMMITTEE TO RE-ELECT NICK HINRICHSEN,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 04,"JAMES, JENNIFER",Republican,None,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 29,"JODEH, IMAN",Democratic,IMAN FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 25,"KLENOW, THOMAS",Democratic,TOM KLENOW FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 27,"LAMMON, DANIELLE",Republican,DANIELLE FOR SD 27,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 30,"LEUNG, KEVIN",Democratic,KEVIN FOR DOUGCO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 20,"LIEDER, SHEILA",Democratic,LIEDER FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 25,"LINDSTEDT, WILLIAM",Democratic,WILLIAM FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 04,"LIVINGSTON, NICOLAS",Democratic,LIVINGSTON FOR COLORADO SENATE DISTRICT 4,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 20,"MANCUSO, RICHARD",Republican,MANCUSO FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 15,"MARCHMAN, JANICE",Democratic,JANICE MARCHMAN FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 34,"MILLER, OLIVIA",Democratic,OLIVIA FOR STATE SENATE 34,No,Terminated
+STATEWIDE,2026,Colorado Senate,Senate District 24,"MULLICA, KYLE",Democratic,KYLE MULLICA FOR SD 24,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 35,"NELSON, TRAVIS",Unaffiliated,TRAVIS FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 01,"PELTON, BYRON",Republican,PELTON FOR STATE SENATE,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 35,"PELTON, RODNEY",Republican,COMMITTEE TO ELECT ROD PELTON,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 03,"PERKO, CHARLES",Democratic,COMMITTEE TO ELECT CHARLES PERKO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 04,"RAVAGE, JEFFREY",Democratic,None,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 01,"RAYMOND, ERIC",Democratic,ERICRAYMOND2026,Yes,Terminated
+STATEWIDE,2026,Colorado Senate,Senate District 11,"RAZO, NICKOLAS",Republican,RAZO FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 07,"RICH, JANICE",Republican,CITIZENS TO ELECT JANICE RICH,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 08,"ROBERTS, DYLAN",Democratic,DYLAN ROBERTS FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 21,"RYCKMAN, ALEX",Democratic,None,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 17,"SEMENAS, KEITH",Republican,None,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 32,"SIROTA, EMILY",Democratic,EMILY SIROTA FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 11,"STILSON, LEVON",Republican,STILSON FOR SENATE DISTRICT 11,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 27,"SULLIVAN, TOM",Democratic,SULLIVAN FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 11,"TISDALE, MARK",Republican,MARK TISDALE FOR SENATE DISTRICT 11,Yes,Active
+STATEWIDE,2026,Colorado Senate,Senate District 03,"VOSS, TAYLOR",Democratic,TAYLOR VOSS FOR STATE SENATE DISTRICT 3,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 17,"WALLACE, KATIE",Democratic,KATIE WALLACE FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 09,"WILSON, LYNDA ZAMORA",Republican,ZAMORA FOR COLORADO,No,Active
+STATEWIDE,2026,Colorado Senate,Senate District 17,"WILSON, MARTHA",Democratic,MARTHA WILSON FOR COLORADO,Yes,Terminated
+STATEWIDE,2026,Colorado Senate,Senate District 15,"WOODWARD, ROB",Republican,WOODWARD FOR COLORADO,No,Active
+
