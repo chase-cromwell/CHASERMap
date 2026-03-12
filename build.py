@@ -42,7 +42,102 @@ DISTRICT_FIELD = {
 }
 
 PLACES_URL   = "https://www2.census.gov/geo/tiger/TIGER2022/PLACE/tl_2022_08_place.zip"
-PLACES_CACHE = DATA_DIR / "co_places.json"
+PLACES_CACHE      = DATA_DIR / "co_places.json"
+LEGISLATORS_FILE  = DATA_DIR / "co_legislators.xlsx"
+
+# ---------------------------------------------------------------------------
+# Incumbent detection
+# ---------------------------------------------------------------------------
+
+_SUFFIX_RE = re.compile(r'\b(JR\.?|SR\.?|II|III|IV|V)\b\.?', re.IGNORECASE)
+
+# Incumbents who file under a nickname differing from their legal first name.
+# Maps (chamber, district) -> the first name as it appears in TRACER.
+_NICKNAME_FIRST_NAMES: dict[tuple, str] = {
+    ("Senate", "11"): "THOMAS",   # Tony Exum Sr. files as Thomas E. Exum Sr.
+    ("House",  "40"): "NIKKI",    # Naquetta Ricks files as Nikki Ricks
+}
+
+# Incumbents not in the Excel file (e.g. mid-session appointments, corrections)
+# Maps (chamber, district) -> TRACER last name (upper, suffix-stripped)
+_EXTRA_INCUMBENTS: dict[tuple, str] = {
+    ("House", "33"): "NGUYEN",    # Kenny Nguyen (HD-33)
+}
+
+
+def load_incumbents() -> dict:
+    """
+    Load current CO legislators from the official Excel export.
+    Returns {(chamber, district): (last_upper, first_upper)}.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        print("  \u26a0  openpyxl not installed — no incumbent flags (pip install openpyxl)")
+        return {}
+    if not LEGISLATORS_FILE.exists():
+        print(f"  \u26a0  {LEGISLATORS_FILE.name} not found — no incumbent flags")
+        return {}
+
+    wb = openpyxl.load_workbook(LEGISLATORS_FILE)
+    result = {}
+    for sheet, chamber in [("Representatives", "House"), ("Senators", "Senate")]:
+        if sheet not in wb.sheetnames:
+            continue
+        ws = wb[sheet]
+        for row in ws.iter_rows(min_row=3, values_only=True):
+            if not row[1]:
+                continue
+            first = row[1].upper().strip()
+            last  = row[2].upper().strip()
+            dist  = str(int(row[6]))
+            result[(chamber, dist)] = (last, first)
+    print(f"  Loaded {len(result)} incumbents from {LEGISLATORS_FILE.name}")
+    return result
+
+
+def is_incumbent(name: str, chamber: str, dist: str, incumbents: dict) -> bool:
+    """
+    Return True if the TRACER candidate name matches the current incumbent
+    for (chamber, dist).  Handles:
+      - Generational suffixes in TRACER (Jr./Sr./IV stripped before compare)
+      - Compound last names (e.g. 'WILSON' matches incumbent 'ZAMORA WILSON')
+      - Middle name used as preferred first (e.g. 'TIMOTHY JARVIS' -> JARVIS)
+      - Short-form first names (e.g. 'RODNEY' matches 'ROD' via 3-char prefix)
+      - Explicit nickname overrides in _NICKNAME_FIRST_NAMES
+      - Extra incumbents in _EXTRA_INCUMBENTS
+    """
+    info = incumbents.get((chamber, dist))
+
+    # Check _EXTRA_INCUMBENTS first (last-name-only match)
+    extra_last = _EXTRA_INCUMBENTS.get((chamber, dist))
+
+    parts = name.strip().upper().split(",", 1)
+    raw_last        = parts[0].strip()
+    raw_first_field = parts[1].strip() if len(parts) > 1 else ""
+    tracer_last     = _SUFFIX_RE.sub("", raw_last).strip()
+    tracer_first    = raw_first_field.split()[0] if raw_first_field else ""
+
+    if extra_last and tracer_last == extra_last:
+        return True
+
+    if not info:
+        return False
+    leg_last, leg_first = info
+
+    # Last-name match (handles compound names like 'ZAMORA WILSON' vs 'WILSON')
+    last_match = tracer_last == leg_last or tracer_last in leg_last.split()
+    if not last_match:
+        return False
+
+    # Use nickname override first name if provided, otherwise legislator first
+    eff_first = _NICKNAME_FIRST_NAMES.get((chamber, dist), leg_first)
+    return (
+        tracer_first == eff_first or                # exact match
+        tracer_first.startswith(eff_first[:3]) or   # prefix (ROD/RODNEY, CHA/CHAD)
+        eff_first in raw_first_field.split()         # leg first is a middle name in TRACER
+    )
+
 
 # ---------------------------------------------------------------------------
 # Step 1 — Load CSV into district-keyed data structure
@@ -54,6 +149,7 @@ def load_races() -> dict:
         { "Senate": { "3": { label, candidates: [...] } }, "House": { ... } }
     """
     races = {"Senate": {}, "House": {}}
+    incumbents = load_incumbents()
 
     with open(CSV_FILE, encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -80,7 +176,7 @@ def load_races() -> dict:
                 "beg":       float(row["BegFundsOnHand"]        or 0),
                 "loans":     float(row["LoansReceived"]         or 0),
                 "vsl":       row["AcceptedVSL"],
-                "incumbent": float(row["BegFundsOnHand"] or 0) > 0,
+                "incumbent": is_incumbent(row["CandName"], chamber, dist, incumbents),
             })
 
     return races
@@ -112,7 +208,7 @@ def load_statewide_races() -> dict:
                 "coh":       float(row["EndFundsOnHand"]        or 0),
                 "loans":     float(row["LoansReceived"]         or 0),
                 "vsl":       row["AcceptedVSL"],
-                "incumbent": float(row.get("BegFundsOnHand") or 0) > 0,
+                "incumbent": False,   # statewide executive incumbents not tracked
             })
 
     total = sum(len(v["candidates"]) for v in offices.values())
