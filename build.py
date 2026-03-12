@@ -80,6 +80,7 @@ def load_races() -> dict:
                 "beg":       float(row["BegFundsOnHand"]        or 0),
                 "loans":     float(row["LoansReceived"]         or 0),
                 "vsl":       row["AcceptedVSL"],
+                "incumbent": float(row["BegFundsOnHand"] or 0) > 0,
             })
 
     return races
@@ -111,6 +112,7 @@ def load_statewide_races() -> dict:
                 "coh":       float(row["EndFundsOnHand"]        or 0),
                 "loans":     float(row["LoansReceived"]         or 0),
                 "vsl":       row["AcceptedVSL"],
+                "incumbent": float(row.get("BegFundsOnHand") or 0) > 0,
             })
 
     total = sum(len(v["candidates"]) for v in offices.values())
@@ -533,6 +535,62 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
   pointer-events: none;
 }
 .leaflet-tooltip.district-label::before { display: none; }
+
+/* ── Incumbent badge ──────────────────────────────────── */
+.incumbent-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 3px;
+  background: #7c3aed; color: #fff; font-size: 9px; font-weight: 700;
+  margin-left: 5px; vertical-align: middle; flex-shrink: 0; cursor: default;
+}
+
+/* ── Topbar icon buttons ────────────────────────────────── */
+.icon-btn {
+  border: 1px solid #475569; background: transparent; color: #94a3b8;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 14px;
+  line-height: 1; transition: all .15s;
+}
+.icon-btn:hover { background: #334155; color: #e2e8f0; }
+
+/* ── Hide VSL indicator when toggled off ──────────────── */
+body.vsl-hidden .cand-card::after { display: none; }
+
+/* ── Modals ───────────────────────────────────────────── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  z-index: 10000; align-items: center; justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+.modal-box {
+  background: #fff; border-radius: 10px; padding: 20px 24px;
+  max-width: 540px; width: 92%; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 8px 40px rgba(0,0,0,.25);
+}
+.modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 14px;
+}
+.modal-title { font-size: 15px; font-weight: 700; color: #0f172a; }
+.modal-close {
+  border: none; background: none; cursor: pointer; color: #64748b;
+  font-size: 22px; line-height: 1; padding: 0 4px;
+}
+.modal-close:hover { color: #0f172a; }
+.modal-section { margin-bottom: 14px; }
+.modal-section h3 {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: #64748b; margin-bottom: 6px;
+}
+.modal-section p, .modal-section li { font-size: 13px; color: #374151; line-height: 1.55; }
+.modal-section ul { padding-left: 16px; }
+.modal-section li { margin-bottom: 5px; }
+.toggle-row {
+  display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
+  padding: 8px 0; border-bottom: 1px solid #f1f5f9;
+}
+.toggle-row input[type=checkbox] { margin-top: 2px; cursor: pointer; }
+.toggle-row .toggle-label { font-size: 13px; color: #0f172a; font-weight: 500; }
+.toggle-row .toggle-desc { font-size: 11px; color: #64748b; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -562,6 +620,9 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
       <input id="search-input" type="text" placeholder="Search candidate or city…" autocomplete="off">
       <div id="search-results"></div>
     </div>
+
+    <button class="icon-btn" id="info-btn" title="How this map works">ℹ</button>
+    <button class="icon-btn" id="settings-btn" title="Settings">⚙</button>
 
     <div id="legend">
       <span id="legend-label">← R leads · D leads →</span>
@@ -609,6 +670,68 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
   </div>
 
 </div>
+
+<!-- ── Info Modal ─────────────────────────────────────── -->
+<div class="modal-overlay" id="info-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div class="modal-title">How This Map Works</div>
+      <button class="modal-close" id="info-close">×</button>
+    </div>
+    <div class="modal-section">
+      <h3>Data Source</h3>
+      <p>All financial data comes from <strong>TRACER</strong>, Colorado's campaign finance reporting system (<em>tracer.sos.colorado.gov</em>), for the 2026 November General Election cycle.</p>
+    </div>
+    <div class="modal-section">
+      <h3>Map Color Modes</h3>
+      <ul>
+        <li><strong>Raised Margin</strong> — Total contributions raised by Democrats vs. Republicans. Blue = Dem advantage, Red = Rep advantage.</li>
+        <li><strong>Cash on Hand Margin</strong> — Same comparison using end-of-period cash available to spend.</li>
+        <li><strong>Competitiveness</strong> — How close the fundraising gap is between parties. Brighter amber = tighter race.</li>
+        <li><strong>Total Raised</strong> — Combined contributions across all candidates in the district. Darker = more total money.</li>
+        <li><strong>Burn Rate</strong> — Ratio of spending to fundraising. Red = spending most of what was raised.</li>
+        <li><strong>Loan Reliance</strong> — Share of funds coming from candidate self-loans. Amber = heavy self-funding.</li>
+      </ul>
+    </div>
+    <div class="modal-section">
+      <h3>Candidate Card</h3>
+      <ul>
+        <li><strong>Raised</strong> — Total monetary contributions received this cycle.</li>
+        <li><strong>Spent</strong> — Total monetary expenditures this cycle.</li>
+        <li><strong>Cash on Hand</strong> — End-of-period available funds (beginning balance + raised − spent).</li>
+        <li><strong>Spend bar</strong> — Visual indicator of what portion of raised funds have been spent.</li>
+        <li><strong>Loan note</strong> — Candidate has self-funded part of their campaign via personal loans.</li>
+        <li><strong>Colored corner triangle</strong> — Green = accepted Volunteer Spending Limits (VSL); Red = declined. VSL is a voluntary cap on spending in exchange for matching public funds eligibility.</li>
+        <li><strong>★ purple badge</strong> — Incumbent: candidate currently holds this seat (indicated by non-zero beginning balance from prior cycle).</li>
+      </ul>
+    </div>
+    <div class="modal-section">
+      <h3>Sidebar Filters</h3>
+      <ul>
+        <li><strong>Hide inactive</strong> — Removes terminated and withdrawn candidates from view.</li>
+        <li><strong>Hide $0</strong> — Removes candidates who have raised and hold $0.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ── Settings Modal ──────────────────────────────────── -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div class="modal-title">Settings</div>
+      <button class="modal-close" id="settings-close">×</button>
+    </div>
+    <label class="toggle-row">
+      <input type="checkbox" id="vsl-toggle" checked>
+      <div>
+        <div class="toggle-label">Show VSL indicator</div>
+        <div class="toggle-desc">Displays a colored corner triangle on candidate cards showing whether they accepted Volunteer Spending Limits.</div>
+      </div>
+    </label>
+  </div>
+</div>
+
 <script>
 // ── Embedded data ─────────────────────────────────────
 const RACES     = __RACES_JSON__;
@@ -720,12 +843,56 @@ function updateLegend() {
   document.getElementById('leg-right').textContent          = cfg.r;
 }
 
+// ── Polygon centroid helpers (Issue #1: accurate label placement) ──────────
+function polygonCentroid(ring) {
+  let cx = 0, cy = 0, area = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const f = ring[i][0] * ring[j][1] - ring[j][0] * ring[i][1];
+    cx += (ring[i][0] + ring[j][0]) * f;
+    cy += (ring[i][1] + ring[j][1]) * f;
+    area += f;
+  }
+  area /= 2;
+  if (Math.abs(area) < 1e-10) {
+    return L.latLng(
+      ring.reduce((s, p) => s + p[1], 0) / ring.length,
+      ring.reduce((s, p) => s + p[0], 0) / ring.length
+    );
+  }
+  return L.latLng(cy / (6 * area), cx / (6 * area));
+}
+
+function featureCentroid(feature) {
+  const geom = feature.geometry;
+  if (geom.type === 'Polygon') {
+    return polygonCentroid(geom.coordinates[0]);
+  }
+  if (geom.type === 'MultiPolygon') {
+    let maxArea = 0, bestRing = null;
+    for (const poly of geom.coordinates) {
+      const ring = poly[0];
+      let area = 0;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++)
+        area += (ring[j][0] + ring[i][0]) * (ring[j][1] - ring[i][1]);
+      area = Math.abs(area / 2);
+      if (area > maxArea) { maxArea = area; bestRing = ring; }
+    }
+    return bestRing ? polygonCentroid(bestRing) : null;
+  }
+  return null;
+}
+
 // ── Map layer ─────────────────────────────────────────
 function buildLayer(chamber) {
   if (activeLayer)  { map.removeLayer(activeLayer); activeLayer = null; }
   if (labelLayer)   { map.removeLayer(labelLayer);  labelLayer  = null; }
 
-  const gj = GEOJSON[chamber];
+  // Issue #4: only render districts that have candidates this cycle
+  const rawGj = GEOJSON[chamber];
+  const filteredFeatures = rawGj.features.filter(f =>
+    RACES[chamber]?.[f.properties.district]
+  );
+  const gj = { ...rawGj, features: filteredFeatures };
 
   activeLayer = L.geoJSON(gj, {
     style: feat => ({
@@ -745,11 +912,11 @@ function buildLayer(chamber) {
     },
   }).addTo(map);
 
-  // District number labels via permanent tooltips
+  // Issue #1: use true polygon centroid for district labels
   labelLayer = L.layerGroup().addTo(map);
   activeLayer.eachLayer(layer => {
     const dist = layer.feature.properties.district;
-    const center = layer.getBounds().getCenter();
+    const center = featureCentroid(layer.feature) || layer.getBounds().getCenter();
     L.tooltip({ permanent: true, direction: 'center', className: 'district-label', interactive: false })
       .setContent(dist)
       .setLatLng(center)
@@ -831,13 +998,15 @@ function openSidebar(chamber, distNum) {
 
   const PARTY_COLOR = { Democratic: '#1a56db', Republican: '#e02424' };
   const candCards = sorted.map(c => {
-    const spentPct  = c.raised > 0 ? Math.min(c.spent / c.raised * 100, 100).toFixed(0) : 0;
-    const barColor  = PARTY_COLOR[c.party] || '#6366f1';
-    const inactive  = c.status !== 'Active';
-    const vslClass  = c.vsl === 'Yes' ? 'vsl-yes' : 'vsl-no';
+    const spentPct       = c.raised > 0 ? Math.min(c.spent / c.raised * 100, 100).toFixed(0) : 0;
+    const barColor       = PARTY_COLOR[c.party] || '#6366f1';
+    const inactive       = c.status !== 'Active';
+    const vslClass       = c.vsl === 'Yes' ? 'vsl-yes' : 'vsl-no';
+    const incumbentBadge = c.incumbent
+      ? '<span class="incumbent-badge" title="Incumbent">★</span>' : '';
     return `
     <div class="cand-card${inactive ? ' inactive' : ''} ${vslClass}">
-      <div class="cand-name">${fmtName(c.name)}</div>
+      <div class="cand-name">${fmtName(c.name)}${incumbentBadge}</div>
       ${c.committee ? `<div class="cand-committee">${c.committee}</div>` : ''}
       <div class="cand-meta">
         <span class="party-badge ${partyClass(c.party)}">${c.party}</span>
@@ -955,10 +1124,11 @@ function renderStatewideChart(office, metric) {
     const header = `<div class="chart-row"><div class="chart-section-header">${headerText}</div></div>`;
     const rows = arr.map(c => {
       const pct  = maxVal > 0 ? (c.metricVal / maxVal * 100).toFixed(1) : 0;
-      const cls  = c.status !== 'Active' ? ' chart-inactive' : '';
-      const sub  = c.committee ? `<span class="chart-sublabel">${c.committee}</span>` : '';
+      const cls      = c.status !== 'Active' ? ' chart-inactive' : '';
+      const sub      = c.committee ? `<span class="chart-sublabel">${c.committee}</span>` : '';
+      const incBadge = c.incumbent ? '<span class="incumbent-badge" title="Incumbent">★</span>' : '';
       return `<div class="chart-row${cls}">
-        <div class="chart-label">${fmtName(c.name)}${sub}</div>
+        <div class="chart-label">${fmtName(c.name)}${incBadge}${sub}</div>
         <div class="chart-bar-track">
           <div class="chart-bar-fill ${barClass(c.party)}" style="width:${pct}%"></div>
         </div>
@@ -1119,6 +1289,30 @@ function goToDistrict(chamber, distNum) {
     if (e.key === 'Escape') { input.value = ''; results.classList.remove('visible'); input.blur(); }
   });
 })();
+
+// ── Modals (Info & Settings) ───────────────────────────
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+document.getElementById('info-btn').addEventListener('click', () => openModal('info-modal'));
+document.getElementById('info-close').addEventListener('click', () => closeModal('info-modal'));
+document.getElementById('settings-btn').addEventListener('click', () => openModal('settings-modal'));
+document.getElementById('settings-close').addEventListener('click', () => closeModal('settings-modal'));
+
+['info-modal', 'settings-modal'].forEach(id => {
+  document.getElementById(id).addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal(id);
+  });
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') ['info-modal','settings-modal'].forEach(closeModal);
+});
+
+// VSL toggle (Issue #3)
+document.getElementById('vsl-toggle').addEventListener('change', e => {
+  document.body.classList.toggle('vsl-hidden', !e.target.checked);
+});
 
 // ── Init ──────────────────────────────────────────────
 updateLegend();
