@@ -30,14 +30,26 @@ JURISDICTION_VALUE = "99"   # STATEWIDE
 ELECTION_VALUE     = "463"  # 2026 NOVEMBER ELECTION
 
 CANDIDATE_FILES = {
-    "Senate": DATA_DIR / "rpt_CF_CAND_001.csv",
-    "House":  DATA_DIR / "rpt_CF_CAND_001-2.csv",
+    "Senate":    DATA_DIR / "rpt_CF_CAND_001.csv",
+    "House":     DATA_DIR / "rpt_CF_CAND_001-2.csv",
+    "Statewide": DATA_DIR / "rpt_CF_CAND_001-statewide.csv",
 }
 
 CHAMBER_OFFICE_VALUES = {
     "Senate": "6",
     "House":  "7",
 }
+
+# Statewide executive offices (values discovered via: python3 scraper.py --discover)
+STATEWIDE_OFFICES: dict[str, str] = {
+    "Governor":           "1",
+    "Lt. Governor":       "2",
+    "Secretary of State": "3",
+    "State Treasurer":    "4",
+    "Attorney General":   "5",
+}
+
+STATEWIDE_OUTPUT_FILE = DATA_DIR / "tracer_2026_statewide.csv"
 
 REQUEST_DELAY_MS = 800
 
@@ -106,10 +118,12 @@ def load_candidate_listings() -> dict:
             if orig_district not in chamber_districts:
                 chamber_districts.append(orig_district)
 
-        districts[chamber] = sorted(
-            chamber_districts,
-            key=lambda d: int(re.search(r"(\d+)$", d).group(1))
-        )
+        # Statewide offices have no numeric suffix — only sort legislative chambers
+        if chamber != "Statewide":
+            districts[chamber] = sorted(
+                chamber_districts,
+                key=lambda d: int(re.search(r"(\d+)$", d).group(1))
+            )
         print(f"  Loaded {len(chamber_districts):3d} districts, "
               f"{sum(1 for k in lookup if k[1].startswith(chamber.upper()[:6]))}"
               f" candidates from {path.name}")
@@ -152,6 +166,60 @@ async def get_tracer_district_map(page) -> dict:
         if value and "Select" not in text:
             result[normalize_district(text)] = {"value": value, "text": text}
     return result
+
+
+async def discover_statewide_offices(page) -> dict[str, str]:
+    """
+    Navigate to TRACER search, set Jurisdiction + Election, then read all
+    <option> values from ddlOffice.  Excludes Senate (6) and House (7).
+    Returns {office_label: dropdown_value}.
+    """
+    await page.goto(SEARCH_URL)
+    await page.wait_for_load_state("networkidle")
+    await select_and_wait(page, 'select[name*="ddlJurisdiction"]', JURISDICTION_VALUE)
+    await select_and_wait(page, 'select[name*="ddlElection"]',     ELECTION_VALUE)
+    options = await page.locator('select[name*="ddlOffice"] option').all()
+    result = {}
+    for opt in options:
+        value = await opt.get_attribute("value")
+        text  = (await opt.inner_text()).strip()
+        if value and "Select" not in text and value not in ("6", "7"):
+            result[text] = value
+    return result
+
+
+async def scrape_statewide_office(page, office_label: str, office_value: str) -> list[dict]:
+    """Search a statewide office (no district selection) and return raw CSV rows."""
+    await page.goto(SEARCH_URL)
+    await page.wait_for_load_state("networkidle")
+    await select_and_wait(page, 'select[name*="ddlJurisdiction"]', JURISDICTION_VALUE)
+    await select_and_wait(page, 'select[name*="ddlElection"]',     ELECTION_VALUE)
+    await select_and_wait(page, 'select[name*="ddlOffice"]',       office_value)
+
+    await page.locator('input[id*="btnSearch"], input[value="Search"]').click()
+    await page.wait_for_load_state("networkidle")
+
+    if await page.locator('text="0 matching record"').count() > 0:
+        return []
+
+    async with page.expect_download(timeout=20_000) as dl_info:
+        await page.locator("#_ctl0_Content_ucExport_ibtnCSV").click()
+    download: Download = await dl_info.value
+
+    csv_path = await download.path()
+    if not csv_path:
+        raise RuntimeError("Download path was None")
+
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        content = f.read()
+
+    rows = []
+    for row in csv.DictReader(io.StringIO(content)):
+        row["Chamber"]        = "Statewide"
+        row["DistrictNumber"] = "0"
+        row["DistrictLabel"]  = office_label
+        rows.append(row)
+    return rows
 
 
 async def scrape_district(page, district_value: str, district_text: str, chamber: str) -> list[dict]:
@@ -292,6 +360,60 @@ def reprocess() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Statewide scraping
+# ---------------------------------------------------------------------------
+
+async def scrape_statewide_main() -> None:
+    if not STATEWIDE_OFFICES:
+        print("⚠  STATEWIDE_OFFICES is empty.  Run --discover first to find office codes,")
+        print("   then fill in the STATEWIDE_OFFICES dict in scraper.py.")
+        return
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    print("Loading candidate listings (for party merge)...")
+    listing, _ = load_candidate_listings()
+    print(f"  Total candidates in listing: {len(listing)}\n")
+
+    all_rows: list[dict] = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context(accept_downloads=True)
+        page    = await context.new_page()
+
+        for office_label, office_value in STATEWIDE_OFFICES.items():
+            print(f"  {office_label} (value={office_value})...", end="", flush=True)
+            try:
+                raw_rows = await scrape_statewide_office(page, office_label, office_value)
+                merged   = merge_with_listing(raw_rows, listing)
+                all_rows.extend(merged)
+                print(f" → {len(merged)} candidate(s)")
+            except Exception as exc:
+                print(f" ERROR: {exc}")
+
+        await browser.close()
+
+    if all_rows:
+        front_cols = [
+            "Chamber", "DistrictNumber", "DistrictLabel",
+            "CandName", "CandidateStatus",
+            "Party", "CommitteeName", "AcceptedVSL", "ListingStatus",
+        ]
+        financial_cols = [k for k in all_rows[0] if k not in front_cols]
+        fieldnames = front_cols + financial_cols
+
+        with open(STATEWIDE_OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(all_rows)
+
+        print(f"\n✓ Wrote {len(all_rows)} statewide candidate records → {STATEWIDE_OUTPUT_FILE}")
+    else:
+        print("\n⚠ No statewide rows collected.")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -398,5 +520,19 @@ async def main() -> None:
 if __name__ == "__main__":
     if "--reprocess" in sys.argv:
         reprocess()
+    elif "--discover" in sys.argv:
+        async def _discover():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=False)
+                page    = await (await browser.new_context()).new_page()
+                offices = await discover_statewide_offices(page)
+                await browser.close()
+            print("\nStatewide office codes found in TRACER:")
+            for label, value in sorted(offices.items(), key=lambda x: int(x[1])):
+                print(f"  {value:>4s}  {label}")
+            print("\nCopy the desired entries into STATEWIDE_OFFICES in scraper.py")
+        asyncio.run(_discover())
+    elif "--statewide" in sys.argv:
+        asyncio.run(scrape_statewide_main())
     else:
         asyncio.run(main())

@@ -23,8 +23,9 @@ import shapefile
 DATA_DIR = Path(__file__).parent / "data"
 MAP_DIR  = Path(__file__).parent / "map"
 
-CSV_FILE    = DATA_DIR / "tracer_2026_all_districts.csv"
-OUTPUT_HTML = MAP_DIR  / "index.html"
+CSV_FILE         = DATA_DIR / "tracer_2026_all_districts.csv"
+STATEWIDE_CSV    = DATA_DIR / "tracer_2026_statewide.csv"
+OUTPUT_HTML      = MAP_DIR  / "index.html"
 
 SHAPEFILE_URLS = {
     "Senate": "https://www2.census.gov/geo/tiger/GENZ2022/shp/cb_2022_08_sldu_500k.zip",
@@ -82,6 +83,39 @@ def load_races() -> dict:
             })
 
     return races
+
+
+def load_statewide_races() -> dict:
+    """
+    Returns:
+        { "Governor": {"label": "Governor", "candidates": [...]}, ... }
+    Returns {} gracefully if tracer_2026_statewide.csv does not exist yet.
+    """
+    if not STATEWIDE_CSV.exists():
+        print("  (no statewide CSV — run: python3 scraper.py --statewide)")
+        return {}
+
+    offices: dict = {}
+    with open(STATEWIDE_CSV, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            office = row["DistrictLabel"]
+            if office not in offices:
+                offices[office] = {"label": office, "candidates": []}
+            offices[office]["candidates"].append({
+                "name":      row["CandName"],
+                "party":     row["Party"],
+                "committee": row["CommitteeName"],
+                "status":    row["CandidateStatus"],
+                "raised":    float(row["MonetaryContributions"] or 0),
+                "spent":     float(row["MonetaryExpenditures"]  or 0),
+                "coh":       float(row["EndFundsOnHand"]        or 0),
+                "loans":     float(row["LoansReceived"]         or 0),
+                "vsl":       row["AcceptedVSL"],
+            })
+
+    total = sum(len(v["candidates"]) for v in offices.values())
+    print(f"  Statewide: {len(offices)} offices, {total} candidates")
+    return offices
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +456,63 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .sr-detail { font-size: 11px; color: #64748b; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sr-empty { padding: 12px; text-align: center; color: #94a3b8; font-size: 12px; }
 
+/* ── Statewide buttons (topbar) ──────────────────────── */
+#statewide-divider { width: 1px; height: 24px; background: #475569; flex-shrink: 0; }
+#statewide-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.statewide-btn {
+  border: 1px solid #475569; background: transparent; color: #94a3b8;
+  padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; font-weight: 500; transition: all .15s;
+}
+.statewide-btn:hover { background: #334155; color: #e2e8f0; }
+.statewide-btn.active { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+
+/* ── Statewide panel ──────────────────────────────────── */
+#statewide-panel {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  background: #f8fafc;
+}
+#statewide-header {
+  display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+  padding: 10px 20px; background: #fff; border-bottom: 1px solid #e2e8f0;
+}
+#statewide-back {
+  border: 1px solid #e2e8f0; background: #fff; color: #475569;
+  padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  font-weight: 500; transition: all .15s; white-space: nowrap;
+}
+#statewide-back:hover { background: #f1f5f9; color: #0f172a; }
+#statewide-title { font-size: 16px; font-weight: 700; color: #0f172a; flex: 1; }
+#statewide-metric {
+  border: 1px solid #e2e8f0; background: #fff; color: #334155;
+  padding: 5px 8px; border-radius: 6px; font-size: 12px; cursor: pointer;
+}
+#statewide-chart-wrap { flex: 1; overflow-y: auto; padding: 24px 32px; }
+#statewide-chart { display: flex; flex-direction: column; gap: 12px; max-width: 900px; }
+
+/* ── Bar chart rows ───────────────────────────────────── */
+.chart-row {
+  display: grid; grid-template-columns: 200px 1fr 90px;
+  align-items: center; gap: 12px;
+}
+.chart-label {
+  text-align: right; font-size: 13px; color: #1e293b;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chart-sublabel { display: block; font-size: 10px; color: #94a3b8; margin-top: 1px; }
+.chart-bar-track { height: 28px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
+.chart-bar-fill { height: 100%; border-radius: 4px; transition: width .4s ease; }
+.chart-bar-fill.party-D     { background: #2563eb; }
+.chart-bar-fill.party-R     { background: #dc2626; }
+.chart-bar-fill.party-other { background: #6366f1; }
+.chart-value { font-size: 13px; font-weight: 600; color: #0f172a; white-space: nowrap; }
+.chart-inactive { opacity: 0.45; }
+.chart-section-header {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: #94a3b8; padding: 4px 0 2px; border-bottom: 1px solid #e5e7eb; margin-bottom: 4px;
+  grid-column: 1 / -1;
+}
+
 /* Leaflet overrides */
 .district-label {
   background: transparent; border: none; box-shadow: none;
@@ -442,6 +533,9 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
       <button class="chamber-btn active" data-chamber="House">House</button>
       <button class="chamber-btn" data-chamber="Senate">Senate</button>
     </div>
+
+    <div id="statewide-divider"></div>
+    <div id="statewide-group"></div>
 
     <select id="colorMode">
       <option value="raised_margin">Raised Margin (D vs R)</option>
@@ -479,20 +573,40 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
     </div>
   </div>
 
+  <div id="statewide-panel" style="display:none">
+    <div id="statewide-header">
+      <button id="statewide-back">← Map</button>
+      <h2 id="statewide-title"></h2>
+      <select id="statewide-metric">
+        <option value="raised">Total Raised</option>
+        <option value="coh">Cash on Hand</option>
+        <option value="spent">Total Spent</option>
+        <option value="burn_rate">Burn Rate</option>
+        <option value="loan_reliance">Loan Reliance</option>
+      </select>
+    </div>
+    <div id="statewide-chart-wrap">
+      <div id="statewide-chart"></div>
+    </div>
+  </div>
+
 </div>
 <script>
 // ── Embedded data ─────────────────────────────────────
-const RACES    = __RACES_JSON__;
-const GEOJSON  = __GEOJSON_JSON__;
-const CITY_MAP = __CITY_MAP_JSON__;
+const RACES     = __RACES_JSON__;
+const STATEWIDE = __STATEWIDE_JSON__;
+const GEOJSON   = __GEOJSON_JSON__;
+const CITY_MAP  = __CITY_MAP_JSON__;
 
 // ── State ─────────────────────────────────────────────
-let activeChamber    = 'House';
-let activeMode       = 'raised_margin';
-let activeLayer      = null;
-let labelLayer       = null;
-let selectedDist     = null;
-const districtLayerMap = {};  // 'House:4' → Leaflet layer
+let activeChamber         = 'House';
+let activeMode            = 'raised_margin';
+let activeLayer           = null;
+let labelLayer            = null;
+let selectedDist          = null;
+const districtLayerMap    = {};  // 'House:4' → Leaflet layer
+let activeStatewide       = null;   // null = map view; string = office name
+let activeStatewideMetric = 'raised';
 
 // ── Leaflet setup ─────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([38.95, -105.55], 7);
@@ -748,6 +862,113 @@ document.getElementById('sidebar-close').addEventListener('click', () => {
   selectedDist = null;
 });
 
+// ── Statewide panel ───────────────────────────────────
+function showStatewidePanel(office) {
+  activeStatewide = office;
+  document.querySelectorAll('.chamber-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.statewide-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.office === office));
+  document.getElementById('main').style.display            = 'none';
+  document.getElementById('statewide-panel').style.display = 'flex';
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('colorMode').style.display    = 'none';
+  document.getElementById('search-wrap').style.display  = 'none';
+  document.getElementById('legend').style.display       = 'none';
+  document.getElementById('statewide-title').textContent = office;
+  renderStatewideChart(office, activeStatewideMetric);
+}
+
+function hideStatewidePanel() {
+  activeStatewide = null;
+  document.getElementById('main').style.display            = 'flex';
+  document.getElementById('statewide-panel').style.display = 'none';
+  document.getElementById('colorMode').style.display    = '';
+  document.getElementById('search-wrap').style.display  = '';
+  document.getElementById('legend').style.display       = '';
+  document.querySelectorAll('.statewide-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.chamber-btn[data-chamber="${activeChamber}"]`).classList.add('active');
+  map.invalidateSize();
+}
+
+function getMetricValue(cand, metric) {
+  if (metric === 'raised')        return cand.raised;
+  if (metric === 'coh')           return cand.coh;
+  if (metric === 'spent')         return cand.spent;
+  if (metric === 'burn_rate')     return cand.raised > 0 ? cand.spent / cand.raised : 0;
+  if (metric === 'loan_reliance') return (cand.raised + cand.loans) > 0
+                                    ? cand.loans / (cand.raised + cand.loans) : 0;
+  return 0;
+}
+
+function renderStatewideChart(office, metric) {
+  const data  = STATEWIDE[office];
+  if (!data) return;
+  const chart    = document.getElementById('statewide-chart');
+  const isMoney  = !['burn_rate', 'loan_reliance'].includes(metric);
+  const withVals = data.candidates.map(c => ({ ...c, metricVal: getMetricValue(c, metric) }));
+  const maxVal   = Math.max(1, ...withVals.map(c => c.metricVal));
+
+  const PARTY_ORDER = { Democratic: 0, Republican: 1 };
+  const sortFn = (a, b) => {
+    const po = (PARTY_ORDER[a.party] ?? 2) - (PARTY_ORDER[b.party] ?? 2);
+    return po !== 0 ? po : b.metricVal - a.metricVal;
+  };
+  const active   = withVals.filter(c => c.status === 'Active').sort(sortFn);
+  const inactive = withVals.filter(c => c.status !== 'Active').sort(sortFn);
+
+  function barClass(party) {
+    if (party === 'Democratic') return 'party-D';
+    if (party === 'Republican') return 'party-R';
+    return 'party-other';
+  }
+  function fmtMetric(val) {
+    return isMoney ? fmt(val) : (val * 100).toFixed(1) + '%';
+  }
+  function renderGroup(arr, headerText) {
+    if (!arr.length) return '';
+    const header = `<div class="chart-row"><div class="chart-section-header">${headerText}</div></div>`;
+    const rows = arr.map(c => {
+      const pct  = maxVal > 0 ? (c.metricVal / maxVal * 100).toFixed(1) : 0;
+      const cls  = c.status !== 'Active' ? ' chart-inactive' : '';
+      const sub  = c.committee ? `<span class="chart-sublabel">${c.committee}</span>` : '';
+      return `<div class="chart-row${cls}">
+        <div class="chart-label">${fmtName(c.name)}${sub}</div>
+        <div class="chart-bar-track">
+          <div class="chart-bar-fill ${barClass(c.party)}" style="width:${pct}%"></div>
+        </div>
+        <div class="chart-value">${fmtMetric(c.metricVal)}</div>
+      </div>`;
+    }).join('');
+    return header + rows;
+  }
+
+  chart.innerHTML = renderGroup(active, 'Active Candidates')
+                  + renderGroup(inactive, 'Terminated / Withdrawn');
+}
+
+(function initStatewideButtons() {
+  const swGroup = document.getElementById('statewide-group');
+  const offices = Object.keys(STATEWIDE);
+  if (!offices.length) {
+    document.getElementById('statewide-divider').style.display = 'none';
+    return;
+  }
+  offices.forEach(office => {
+    const btn = document.createElement('button');
+    btn.className = 'statewide-btn';
+    btn.dataset.office = office;
+    btn.textContent = office;
+    btn.addEventListener('click', () => showStatewidePanel(office));
+    swGroup.appendChild(btn);
+  });
+})();
+
+document.getElementById('statewide-back').addEventListener('click', hideStatewidePanel);
+document.getElementById('statewide-metric').addEventListener('change', e => {
+  activeStatewideMetric = e.target.value;
+  if (activeStatewide) renderStatewideChart(activeStatewide, activeStatewideMetric);
+});
+
 // ── Controls ──────────────────────────────────────────
 document.querySelectorAll('.chamber-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -867,17 +1088,19 @@ buildLayer(activeChamber);
 """
 
 
-def generate_html(races: dict, geojson_senate: dict, geojson_house: dict,
-                  city_map: dict) -> str:
-    races_json    = json.dumps(races,   separators=(',', ':'))
-    geojson_json  = json.dumps({"Senate": geojson_senate, "House": geojson_house},
-                               separators=(',', ':'))
-    city_map_json = json.dumps(city_map, separators=(',', ':'))
+def generate_html(races: dict, statewide: dict, geojson_senate: dict,
+                  geojson_house: dict, city_map: dict) -> str:
+    races_json     = json.dumps(races,      separators=(',', ':'))
+    statewide_json = json.dumps(statewide,  separators=(',', ':'))
+    geojson_json   = json.dumps({"Senate": geojson_senate, "House": geojson_house},
+                                separators=(',', ':'))
+    city_map_json  = json.dumps(city_map,   separators=(',', ':'))
 
     html = HTML_TEMPLATE
-    html = html.replace('__RACES_JSON__',    races_json)
-    html = html.replace('__GEOJSON_JSON__',  geojson_json)
-    html = html.replace('__CITY_MAP_JSON__', city_map_json)
+    html = html.replace('__RACES_JSON__',     races_json)
+    html = html.replace('__STATEWIDE_JSON__', statewide_json)
+    html = html.replace('__GEOJSON_JSON__',   geojson_json)
+    html = html.replace('__CITY_MAP_JSON__',  city_map_json)
     return html
 
 
@@ -894,6 +1117,9 @@ def main():
     house_count  = sum(len(v['candidates']) for v in races['House'].values())
     print(f"  Senate: {len(races['Senate'])} districts, {senate_count} candidates")
     print(f"  House:  {len(races['House'])} districts, {house_count} candidates")
+
+    print("\nLoading statewide data...")
+    statewide = load_statewide_races()
 
     print("\nLoading GeoJSON...")
     gj_senate = shapefile_to_geojson("Senate")
@@ -912,7 +1138,7 @@ def main():
     print(f"  House:  {h_mapped} districts with cities")
 
     print(f"\nGenerating {OUTPUT_HTML}...")
-    html = generate_html(races, gj_senate, gj_house, city_map)
+    html = generate_html(races, statewide, gj_senate, gj_house, city_map)
 
     with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
         f.write(html)
