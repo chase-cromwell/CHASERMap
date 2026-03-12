@@ -356,6 +356,9 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 }
 #sidebar-close:hover { color: #0f172a; }
 
+#sidebar-filters { display: none; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+#sidebar.open #sidebar-filters { display: flex; }
+
 .summary-row {
   display: flex; gap: 8px; margin-bottom: 14px;
 }
@@ -467,6 +470,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .statewide-btn:hover { background: #334155; color: #e2e8f0; }
 .statewide-btn.active { background: #7c3aed; border-color: #7c3aed; color: #fff; }
 
+/* ── Filter toggles (statewide panel + sidebar) ──────── */
+.filter-toggle {
+  border: 1px solid #e2e8f0; background: #fff; color: #64748b;
+  padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 11px;
+  font-weight: 500; transition: all .15s; white-space: nowrap;
+}
+.filter-toggle:hover { background: #f1f5f9; color: #0f172a; }
+.filter-toggle.active { background: #0f172a; border-color: #0f172a; color: #fff; }
+
 /* ── Statewide panel ──────────────────────────────────── */
 #statewide-panel {
   flex: 1; display: flex; flex-direction: column; overflow: hidden;
@@ -568,6 +580,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
           <div id="sidebar-title"></div>
           <button id="sidebar-close">×</button>
         </div>
+        <div id="sidebar-filters">
+          <button class="filter-toggle" data-filter="inactive">Hide inactive</button>
+          <button class="filter-toggle" data-filter="empty">Hide $0</button>
+        </div>
         <div id="sidebar-body"></div>
       </div>
     </div>
@@ -584,6 +600,8 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
         <option value="burn_rate">Burn Rate</option>
         <option value="loan_reliance">Loan Reliance</option>
       </select>
+      <button class="filter-toggle" data-filter="inactive">Hide inactive</button>
+      <button class="filter-toggle" data-filter="empty">Hide $0</button>
     </div>
     <div id="statewide-chart-wrap">
       <div id="statewide-chart"></div>
@@ -607,6 +625,8 @@ let selectedDist          = null;
 const districtLayerMap    = {};  // 'House:4' → Leaflet layer
 let activeStatewide       = null;   // null = map view; string = office name
 let activeStatewideMetric = 'raised';
+let filterHideInactive    = false;
+let filterHideEmpty       = false;
 
 // ── Leaflet setup ─────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([38.95, -105.55], 7);
@@ -800,8 +820,11 @@ function openSidebar(chamber, distNum) {
   const partyTotal = Dr + Rr;
   const dPct = partyTotal > 0 ? (Dr / partyTotal * 100).toFixed(1) : 50;
 
-  // Sort: Active first, then by raised desc
-  const sorted = [...cands].sort((a,b) => {
+  // Filter + sort: Active first, then by raised desc
+  let filtered = [...cands];
+  if (filterHideInactive) filtered = filtered.filter(c => c.status === 'Active');
+  if (filterHideEmpty)    filtered = filtered.filter(c => c.raised > 0 || c.coh > 0);
+  const sorted = filtered.sort((a,b) => {
     if (a.status === b.status) return b.raised - a.raised;
     return a.status === 'Active' ? -1 : 1;
   });
@@ -905,7 +928,10 @@ function renderStatewideChart(office, metric) {
   if (!data) return;
   const chart    = document.getElementById('statewide-chart');
   const isMoney  = !['burn_rate', 'loan_reliance'].includes(metric);
-  const withVals = data.candidates.map(c => ({ ...c, metricVal: getMetricValue(c, metric) }));
+  let candidates = data.candidates;
+  if (filterHideInactive) candidates = candidates.filter(c => c.status === 'Active');
+  if (filterHideEmpty)    candidates = candidates.filter(c => c.raised > 0 || c.coh > 0);
+  const withVals = candidates.map(c => ({ ...c, metricVal: getMetricValue(c, metric) }));
   const maxVal   = Math.max(1, ...withVals.map(c => c.metricVal));
 
   const PARTY_ORDER = { Democratic: 0, Republican: 1 };
@@ -969,9 +995,24 @@ document.getElementById('statewide-metric').addEventListener('change', e => {
   if (activeStatewide) renderStatewideChart(activeStatewide, activeStatewideMetric);
 });
 
+document.querySelectorAll('.filter-toggle[data-filter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.filter === 'inactive') filterHideInactive = !filterHideInactive;
+    else                                   filterHideEmpty     = !filterHideEmpty;
+    // Sync all matching buttons
+    document.querySelectorAll(`.filter-toggle[data-filter="${btn.dataset.filter}"]`)
+      .forEach(b => b.classList.toggle('active', btn.dataset.filter === 'inactive'
+                                                 ? filterHideInactive : filterHideEmpty));
+    // Re-render wherever applicable
+    if (activeStatewide) renderStatewideChart(activeStatewide, activeStatewideMetric);
+    if (selectedDist)    openSidebar(activeChamber, selectedDist);
+  });
+});
+
 // ── Controls ──────────────────────────────────────────
 document.querySelectorAll('.chamber-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    if (activeStatewide) hideStatewidePanel();
     if (btn.dataset.chamber === activeChamber) return;
     document.querySelectorAll('.chamber-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
