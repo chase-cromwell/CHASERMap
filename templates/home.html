@@ -1,0 +1,590 @@
+{% extends "base.html" %}
+
+{% block title %}Colorado 2026 Campaign Finance{% endblock %}
+
+{% block head %}
+<style>
+/* ── Hero ───────────────────────────────────────────────────── */
+.hero {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  padding: 56px 20px 48px; text-align: center; color: #f1f5f9;
+}
+.hero h1 {
+  font-size: 28px; font-weight: 800; color: #fff;
+  margin-bottom: 8px; letter-spacing: -.02em;
+}
+.hero p { font-size: 15px; color: #94a3b8; margin-bottom: 32px; }
+.search-outer { position: relative; max-width: 540px; margin: 0 auto; }
+.search-bar {
+  width: 100%; padding: 14px 20px; font-size: 15px;
+  border: 2px solid #334155; background: #1e293b; color: #f1f5f9;
+  border-radius: 12px; outline: none; transition: border-color .2s;
+}
+.search-bar::placeholder { color: #475569; }
+.search-bar:focus { border-color: #3b82f6; }
+.search-hint { margin-top: 10px; font-size: 12px; color: #475569; }
+#hp-results {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  width: 100%; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  z-index: 200; overflow: hidden; max-height: 420px; overflow-y: auto; text-align: left;
+}
+#hp-results.visible { display: block; }
+.sr-section-head {
+  padding: 8px 14px 4px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em; color: #94a3b8;
+  border-top: 1px solid #f1f5f9;
+}
+.sr-section-head:first-child { border-top: none; }
+.sr-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  cursor: pointer; border-bottom: 1px solid #f8fafc;
+  text-decoration: none; color: inherit;
+}
+.sr-item:last-child { border-bottom: none; }
+.sr-item:hover { background: #f8fafc; }
+.sr-type {
+  font-size: 10px; font-weight: 700; padding: 2px 7px;
+  border-radius: 4px; flex-shrink: 0;
+}
+.sr-type-race { background: #334155; color: #e2e8f0; }
+.sr-type-cand { background: #dbeafe; color: #1e40af; }
+.sr-body { flex: 1; min-width: 0; }
+.sr-title { font-size: 13px; font-weight: 600; color: #0f172a; }
+.sr-sub {
+  font-size: 11px; color: #64748b; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sr-empty { padding: 16px; text-align: center; color: #94a3b8; font-size: 13px; }
+
+/* ── Page sections ──────────────────────────────────────────── */
+.home-section {
+  max-width: 960px; margin: 0 auto 48px; padding: 0 20px;
+}
+
+/* ── Map CTA card ───────────────────────────────────────────── */
+.map-cta-card {
+  display: flex; align-items: center; justify-content: space-between;
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+  border-radius: 16px; padding: 36px 40px; text-decoration: none;
+  color: #f1f5f9; gap: 24px; transition: opacity .2s; margin-top: 32px;
+  overflow: hidden;
+}
+.map-cta-card:hover { opacity: .92; text-decoration: none; color: #f1f5f9; }
+.map-cta-text { flex: 1; }
+.map-cta-eyebrow {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .1em; color: #60a5fa; margin-bottom: 8px;
+}
+.map-cta-title { font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 10px; }
+.map-cta-desc { font-size: 14px; color: #94a3b8; line-height: 1.6; max-width: 420px; }
+.map-cta-btn {
+  display: inline-block; margin-top: 20px; background: #3b82f6; color: #fff;
+  padding: 10px 22px; border-radius: 8px; font-size: 14px; font-weight: 600;
+}
+.map-cta-art { flex-shrink: 0; opacity: .22; }
+.map-cta-art svg { width: 160px; height: 130px; }
+
+/* ── Two-column layout ──────────────────────────────────────── */
+.home-two-col {
+  display: grid; grid-template-columns: 3fr 2fr; gap: 32px; align-items: start;
+}
+
+/* ── Competitive race cards ─────────────────────────────────── */
+.comp-grid { display: flex; flex-direction: column; gap: 10px; }
+.comp-card {
+  display: flex; flex-direction: column; gap: 8px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  padding: 14px 16px; text-decoration: none; color: inherit;
+  transition: border-color .15s, box-shadow .15s;
+}
+.comp-card:hover {
+  border-color: #93c5fd; box-shadow: 0 2px 8px rgba(37,99,235,.08);
+  text-decoration: none;
+}
+.comp-card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.comp-card-label { font-size: 14px; font-weight: 600; color: #0f172a; }
+.margin-badge {
+  font-size: 11px; font-weight: 700; padding: 2px 8px;
+  border-radius: 10px; white-space: nowrap; flex-shrink: 0;
+}
+.margin-badge-D { background: #dbeafe; color: #1e40af; }
+.margin-badge-R { background: #fee2e2; color: #991b1b; }
+.margin-badge-tie { background: #f3f4f6; color: #4b5563; }
+
+/* ── Leaderboard ────────────────────────────────────────────── */
+.leaderboard {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.lb-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9; text-decoration: none; color: inherit;
+  transition: background .1s;
+}
+.lb-row:last-child { border-bottom: none; }
+.lb-row:hover { background: #f8fafc; text-decoration: none; }
+.lb-rank {
+  font-size: 11px; font-weight: 700; color: #94a3b8;
+  width: 22px; flex-shrink: 0; text-align: right;
+}
+.lb-body { flex: 1; min-width: 0; }
+.lb-name { font-size: 13px; font-weight: 600; color: #0f172a; }
+.lb-race {
+  font-size: 11px; color: #94a3b8; margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lb-raised { font-size: 14px; font-weight: 700; color: #0f172a; flex-shrink: 0; }
+
+/* ── All Races browser ──────────────────────────────────────── */
+.races-browser-header {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.tab-row { display: flex; gap: 6px; }
+.tab-btn {
+  padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  border: 1px solid #e2e8f0; background: #fff; color: #475569; cursor: pointer;
+  transition: all .15s;
+}
+.tab-btn:hover { border-color: #93c5fd; color: #1e40af; }
+.tab-btn.active { background: #1e293b; color: #f1f5f9; border-color: #1e293b; }
+.race-filter-input {
+  padding: 6px 12px; border: 1px solid #e2e8f0; border-radius: 8px;
+  font-size: 12px; color: #0f172a; outline: none; margin-left: auto;
+  transition: border-color .2s;
+}
+.race-filter-input:focus { border-color: #3b82f6; }
+.races-table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #e2e8f0; }
+.races-table {
+  width: 100%; border-collapse: collapse; font-size: 13px; background: #fff;
+}
+.races-table th {
+  background: #f8fafc; padding: 10px 14px; text-align: left;
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: #64748b; border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.races-table th.sortable { cursor: pointer; user-select: none; }
+.races-table th.sortable:hover { color: #0f172a; }
+.races-table td {
+  padding: 10px 14px; border-bottom: 1px solid #f1f5f9; color: #0f172a;
+  vertical-align: middle;
+}
+.races-table tr:last-child td { border-bottom: none; }
+.races-table tr:hover td { background: #f8fafc; }
+.races-table .td-link { text-align: center; width: 32px; }
+.races-table .td-link a { color: #3b82f6; font-weight: 600; font-size: 16px; text-decoration: none; }
+.sort-icon { font-size: 10px; color: #94a3b8; }
+.td-margin-D { color: #1e40af; font-weight: 700; }
+.td-margin-R { color: #991b1b; font-weight: 700; }
+.td-margin-tie { color: #64748b; }
+.races-empty { padding: 32px; text-align: center; color: #94a3b8; font-size: 13px; }
+
+/* ── Responsive ─────────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .home-two-col { grid-template-columns: 1fr; }
+  .map-cta-card { flex-direction: column; padding: 28px 24px; }
+  .map-cta-art { display: none; }
+  .map-cta-title { font-size: 18px; }
+  .races-browser-header { flex-direction: column; align-items: flex-start; }
+  .race-filter-input { margin-left: 0; width: 100%; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+
+{# ── Hero + Search ─────────────────────────────────────────────── #}
+<div class="hero">
+  <h1>Colorado 2026 Campaign Finance</h1>
+  <p>Explore fundraising data for all legislative and statewide races.</p>
+  <div class="search-outer">
+    <input id="hp-search" class="search-bar" type="text"
+           placeholder="Search races, candidates, cities&#8230;" autocomplete="off">
+    <div id="hp-results"></div>
+  </div>
+  <p class="search-hint">Try &ldquo;House District 44&rdquo;, &ldquo;Denver&rdquo;, or a candidate name</p>
+</div>
+
+{# ── Map CTA ───────────────────────────────────────────────────── #}
+<div class="home-section">
+  <a class="map-cta-card" href="/map/">
+    <div class="map-cta-text">
+      <div class="map-cta-eyebrow">Interactive Map</div>
+      <div class="map-cta-title">Explore Districts Geographically</div>
+      <div class="map-cta-desc">Click any district to see all candidates and their fundraising. Color-coded by margin, competitiveness, cash on hand, burn rate, and more.</div>
+      <span class="map-cta-btn">Open Map &rarr;</span>
+    </div>
+    <div class="map-cta-art" aria-hidden="true">
+      <svg viewBox="0 0 200 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="10,20 60,10 80,45 50,70 15,60"     fill="#60a5fa" opacity=".7"/>
+        <polygon points="65,8 130,15 125,55 90,65 55,72 60,40" fill="#3b82f6" opacity=".6"/>
+        <polygon points="135,18 190,25 185,75 140,80 128,50"   fill="#93c5fd" opacity=".55"/>
+        <polygon points="12,65 55,75 70,110 40,130 8,115"      fill="#60a5fa" opacity=".5"/>
+        <polygon points="58,78 130,62 145,85 120,130 70,140 50,115" fill="#3b82f6" opacity=".45"/>
+        <polygon points="148,88 190,80 192,140 145,148 130,130"    fill="#93c5fd" opacity=".4"/>
+        <polygon points="32,130 68,118 80,148 45,155 25,148"  fill="#60a5fa" opacity=".35"/>
+      </svg>
+    </div>
+  </a>
+</div>
+
+{# ── Two-column: Competitive + Leaderboard ─────────────────────── #}
+<div class="home-section">
+  <div class="home-two-col">
+
+    {# LEFT: Competitive Races #}
+    <div>
+      <div class="section-label">Most Competitive Races</div>
+      <div id="comp-races-list"><div class="races-empty">Loading&hellip;</div></div>
+    </div>
+
+    {# RIGHT: Top Fundraisers #}
+    <div>
+      <div class="section-label">Top Fundraisers</div>
+      <div id="leaderboard-list"><div class="races-empty">Loading&hellip;</div></div>
+    </div>
+
+  </div>
+</div>
+
+{# ── All Races Browser ─────────────────────────────────────────── #}
+<div class="home-section">
+  <div class="races-browser-header">
+    <div class="section-label" style="margin:0">All Races</div>
+    <div class="tab-row">
+      <button class="tab-btn active" onclick="setTab('House')">House</button>
+      <button class="tab-btn"        onclick="setTab('Senate')">Senate</button>
+      <button class="tab-btn"        onclick="setTab('Statewide')">Statewide</button>
+    </div>
+    <input id="race-filter" class="race-filter-input" type="text"
+           placeholder="Filter by district&#8230;" autocomplete="off">
+  </div>
+  <div class="races-table-wrap">
+    <table class="races-table">
+      <thead>
+        <tr>
+          <th class="sortable" onclick="sortBy('label')">
+            District <span class="sort-icon" id="sort-label"></span>
+          </th>
+          <th class="sortable" onclick="sortBy('d_raised')">
+            Dem Raised <span class="sort-icon" id="sort-d_raised"></span>
+          </th>
+          <th class="sortable" onclick="sortBy('r_raised')">
+            Rep Raised <span class="sort-icon" id="sort-r_raised"></span>
+          </th>
+          <th class="sortable" onclick="sortBy('total_raised')">
+            Total <span class="sort-icon" id="sort-total_raised"></span>
+          </th>
+          <th>Margin</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="races-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ── Injected data ────────────────────────────────────────────────
+const RACES      = {{ races_json | safe }};
+const STATEWIDE  = {{ statewide_json | safe }};
+const CITY_MAP   = {{ city_map_json | safe }};
+const LEADERBOARD = {{ leaderboard_json | safe }};
+const RACES_AGG   = {{ races_agg_json | safe }};
+
+// ── Search helpers ───────────────────────────────────────────────
+function slugify(t) {
+  return t.toLowerCase().trim()
+    .replace(/[^\w\s-]/g,'').replace(/[\s_]+/g,'-')
+    .replace(/-+/g,'-').replace(/^-|-$/g,'');
+}
+function fmtName(s) {
+  const p = s.trim().split(',');
+  const last = p[0].trim().replace(/\b\w/g, c => c.toUpperCase());
+  if (p.length > 1) {
+    const first = p[1].trim().split(/\s+/)[0].replace(/\b\w/g, c => c.toUpperCase());
+    return first + ' ' + last;
+  }
+  return last;
+}
+function candSlug(name, ctx) {
+  const p = name.trim().split(',');
+  const last = slugify(p[0]);
+  const first = p.length > 1 ? slugify(p[1].trim().split(/\s+/)[0]) : '';
+  const suf = slugify(ctx);
+  return first ? first + '-' + last + '-' + suf : last + '-' + suf;
+}
+
+// ── Build search index ───────────────────────────────────────────
+const idx = [];
+['Senate','House'].forEach(ch => {
+  Object.entries(RACES[ch] || {}).forEach(([dist, data]) => {
+    const cities = CITY_MAP[ch]?.[dist] || [];
+    const names  = data.candidates.map(c => c.name);
+    const comms  = data.candidates.map(c => c.committee).filter(Boolean);
+    idx.push({
+      type:'race', label:data.label,
+      url: '/races/' + ch.toLowerCase() + '-' + dist + '/',
+      sub: cities.slice(0,3).join(', ') || (data.candidates.length + ' candidates'),
+      text: [data.label, ...cities, ...names, ...comms].join(' ').toLowerCase(),
+    });
+    data.candidates.forEach(c => {
+      idx.push({
+        type:'candidate', label:fmtName(c.name), party:c.party,
+        url: '/candidates/' + candSlug(c.name, ch + '-' + dist) + '/',
+        sub: c.party + ' \u00b7 ' + data.label,
+        text: [c.name, c.committee||'', data.label, ...cities].join(' ').toLowerCase(),
+      });
+    });
+  });
+});
+Object.entries(STATEWIDE).forEach(([office, data]) => {
+  idx.push({
+    type:'race', label:office,
+    url: '/races/' + slugify(office) + '/',
+    sub: data.candidates.length + ' candidates \u00b7 Statewide',
+    text: [office, ...data.candidates.map(c => c.name)].join(' ').toLowerCase(),
+  });
+  data.candidates.forEach(c => {
+    idx.push({
+      type:'candidate', label:fmtName(c.name), party:c.party,
+      url: '/candidates/' + candSlug(c.name, office) + '/',
+      sub: c.party + ' \u00b7 ' + office,
+      text: [c.name, c.committee||'', office].join(' ').toLowerCase(),
+    });
+  });
+});
+
+function doSearch(q) {
+  if (!q.trim()) return [];
+  const lq = q.toLowerCase();
+  return idx.filter(e => e.text.includes(lq)).slice(0, 14);
+}
+
+const inp = document.getElementById('hp-search');
+const box = document.getElementById('hp-results');
+let debounce;
+
+inp.addEventListener('input', () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => renderSearch(doSearch(inp.value)), 150);
+});
+inp.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    inp.value = ''; box.innerHTML = ''; box.classList.remove('visible');
+  }
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-outer')) box.classList.remove('visible');
+});
+
+function renderSearch(results) {
+  if (!results.length) {
+    box.innerHTML = inp.value ? '<div class="sr-empty">No results found</div>' : '';
+    box.classList.toggle('visible', !!inp.value);
+    return;
+  }
+  const races = results.filter(r => r.type === 'race');
+  const cands = results.filter(r => r.type === 'candidate');
+  let html = '';
+  if (races.length) {
+    html += '<div class="sr-section-head">Races</div>';
+    races.forEach(r => {
+      html += '<a class="sr-item" href="' + r.url + '">'
+        + '<span class="sr-type sr-type-race">Race</span>'
+        + '<div class="sr-body"><div class="sr-title">' + r.label + '</div>'
+        + '<div class="sr-sub">' + r.sub + '</div></div></a>';
+    });
+  }
+  if (cands.length) {
+    html += '<div class="sr-section-head">Candidates</div>';
+    cands.forEach(r => {
+      const bc = r.party === 'Democratic' ? 'badge-D'
+               : r.party === 'Republican' ? 'badge-R' : 'badge-other';
+      html += '<a class="sr-item" href="' + r.url + '">'
+        + '<span class="sr-type sr-type-cand">Candidate</span>'
+        + '<div class="sr-body"><div class="sr-title">' + r.label
+        + ' <span class="party-badge ' + bc + '">' + r.party + '</span></div>'
+        + '<div class="sr-sub">' + r.sub + '</div></div></a>';
+    });
+  }
+  box.innerHTML = html;
+  box.classList.add('visible');
+}
+
+function focusSearch() {
+  inp.focus();
+  inp.scrollIntoView({behavior:'smooth', block:'center'});
+}
+
+// ── Currency formatter ───────────────────────────────────────────
+function fmt(n) {
+  if (!n || n === 0) return '$0';
+  if (Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+  return '$' + Math.round(n);
+}
+
+// ── Competitive Races ────────────────────────────────────────────
+function renderCompetitive() {
+  const races = RACES_AGG
+    .filter(r => (r.d_raised + r.r_raised) > 0)
+    .map(r => {
+      const tot    = r.d_raised + r.r_raised;
+      const margin = (r.d_raised - r.r_raised) / tot; // -1 (full R) to +1 (full D)
+      return { ...r, margin };
+    })
+    .sort((a, b) => Math.abs(a.margin) - Math.abs(b.margin))
+    .slice(0, 10);
+
+  const el = document.getElementById('comp-races-list');
+  if (!races.length) {
+    el.innerHTML = '<div class="races-empty">No contested races found.</div>';
+    return;
+  }
+  el.className = 'comp-grid';
+  el.innerHTML = races.map(r => {
+    const pct    = (r.d_raised / (r.d_raised + r.r_raised) * 100).toFixed(1);
+    const absMar = Math.abs(r.margin * 100).toFixed(1);
+    const leader = r.margin > 0.005 ? 'D' : r.margin < -0.005 ? 'R' : 'tie';
+    const badgeCls = leader === 'D' ? 'margin-badge-D'
+                   : leader === 'R' ? 'margin-badge-R'
+                   : 'margin-badge-tie';
+    const badgeTxt = leader === 'tie' ? 'Even' : leader + '+' + absMar + '%';
+    return `<a class="comp-card" href="/races/${r.race_slug}/">
+      <div class="comp-card-top">
+        <span class="comp-card-label">${r.label}</span>
+        <span class="margin-badge ${badgeCls}">${badgeTxt}</span>
+      </div>
+      <div class="party-bar-wrap" style="margin:0">
+        <div class="party-bar-labels">
+          <span class="dem">D ${fmt(r.d_raised)}</span>
+          <span class="rep">R ${fmt(r.r_raised)}</span>
+        </div>
+        <div class="party-bar-track">
+          <div class="party-bar-fill" style="width:${pct}%"></div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:2px">
+        Total ${fmt(r.total_raised)} &bull; ${r.cand_count} candidates
+      </div>
+    </a>`;
+  }).join('');
+}
+
+// ── Top Fundraisers Leaderboard ──────────────────────────────────
+function renderLeaderboard() {
+  const el = document.getElementById('leaderboard-list');
+  if (!LEADERBOARD.length) {
+    el.innerHTML = '<div class="races-empty">No data available.</div>';
+    return;
+  }
+  el.className = 'leaderboard';
+  el.innerHTML = LEADERBOARD.map((c, i) => {
+    const bc = c.party === 'Democratic' ? 'badge-D'
+             : c.party === 'Republican' ? 'badge-R' : 'badge-other';
+    const partyInitial = c.party ? c.party.charAt(0) : '?';
+    return `<a class="lb-row" href="/candidates/${c.slug}/">
+      <span class="lb-rank">${i + 1}</span>
+      <div class="lb-body">
+        <div class="lb-name">${fmtName(c.name)}&nbsp;<span class="party-badge ${bc}">${partyInitial}</span></div>
+        <div class="lb-race">${c.label}</div>
+      </div>
+      <span class="lb-raised">${fmt(c.raised)}</span>
+    </a>`;
+  }).join('');
+}
+
+// ── All Races Table ──────────────────────────────────────────────
+let activeTab = 'House';
+let sortCol   = 'total_raised';
+let sortAsc   = false;
+
+function setTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.trim() === tab);
+  });
+  renderRacesTable();
+}
+
+function sortBy(col) {
+  if (sortCol === col) {
+    sortAsc = !sortAsc;
+  } else {
+    sortCol = col;
+    sortAsc = (col === 'label'); // labels default ascending, numbers descending
+  }
+  // Reset all icons, set the active one
+  document.querySelectorAll('.sort-icon').forEach(el => el.textContent = '');
+  const icon = document.getElementById('sort-' + col);
+  if (icon) icon.textContent = sortAsc ? '\u00a0\u25b2' : '\u00a0\u25bc';
+  renderRacesTable();
+}
+
+function renderRacesTable() {
+  const filterText = document.getElementById('race-filter').value.toLowerCase().trim();
+  const STATEWIDE_CHAMBERS = new Set(['Governor','Lieutenant Governor','Secretary of State','Treasurer','Attorney General']);
+
+  let rows = RACES_AGG.filter(r => {
+    const isStatewide = !['Senate','House'].includes(r.chamber);
+    const matchTab = activeTab === 'Statewide' ? isStatewide : r.chamber === activeTab;
+    const matchFilter = !filterText || r.label.toLowerCase().includes(filterText);
+    return matchTab && matchFilter;
+  });
+
+  rows.sort((a, b) => {
+    let av = a[sortCol] ?? '', bv = b[sortCol] ?? '';
+    if (typeof av === 'string') { av = av.toLowerCase(); bv = bv.toLowerCase(); }
+    if (av === bv) return 0;
+    return sortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+  });
+
+  const tbody = document.getElementById('races-tbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="races-empty">No races match your filter.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map(r => {
+    const tot = r.d_raised + r.r_raised;
+    let marginTxt = '&mdash;', marginCls = 'td-margin-tie';
+    if (tot > 0) {
+      const m = (r.d_raised - r.r_raised) / tot * 100;
+      if (Math.abs(m) < 0.5) {
+        marginTxt = 'Even';
+      } else if (m > 0) {
+        marginTxt = 'D+' + m.toFixed(1) + '%'; marginCls = 'td-margin-D';
+      } else {
+        marginTxt = 'R+' + Math.abs(m).toFixed(1) + '%'; marginCls = 'td-margin-R';
+      }
+    }
+    return `<tr>
+      <td><a href="/races/${r.race_slug}/" style="font-weight:600;color:#0f172a;text-decoration:none">${r.label}</a></td>
+      <td style="color:#1a56db">${fmt(r.d_raised)}</td>
+      <td style="color:#e02424">${fmt(r.r_raised)}</td>
+      <td style="font-weight:700">${fmt(r.total_raised)}</td>
+      <td class="${marginCls}">${marginTxt}</td>
+      <td class="td-link"><a href="/races/${r.race_slug}/" title="View race">&rarr;</a></td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Filter debounce ──────────────────────────────────────────────
+document.getElementById('race-filter').addEventListener('input', () => {
+  clearTimeout(window._rfDebounce);
+  window._rfDebounce = setTimeout(renderRacesTable, 150);
+});
+
+// ── Init ─────────────────────────────────────────────────────────
+renderCompetitive();
+renderLeaderboard();
+renderRacesTable();
+
+// Set initial sort icon on "Total" column (default)
+const initIcon = document.getElementById('sort-' + sortCol);
+if (initIcon) initIcon.textContent = '\u00a0\u25bc';
+</script>
+
+{% endblock %}

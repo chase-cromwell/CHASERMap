@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}{{ cand.name | fmt_name }} &mdash; Colorado 2026{% endblock %}
+
+{% block content %}
+<div class="container">
+  <a class="back-link" href="/races/{{ cand.race_slug }}/">&larr; Back to {{ cand.label | fmt_label }}</a>
+
+  <h1 class="page-title">{{ cand.name | fmt_name }}</h1>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+    {# Party badge #}
+    {% if cand.party == 'Democratic' %}
+      <span class="party-badge badge-D">{{ cand.party }}</span>
+    {% elif cand.party == 'Republican' %}
+      <span class="party-badge badge-R">{{ cand.party }}</span>
+    {% else %}
+      <span class="party-badge badge-other">{{ cand.party }}</span>
+    {% endif %}
+    {# Incumbent badge #}
+    {% if cand.incumbent %}
+      <span class="incumbent-badge">&#9733; Incumbent</span>
+    {% endif %}
+    {# VSL badge #}
+    {% if cand.vsl == 'Yes' %}
+      <span class="vsl-badge vsl-yes">Accepted VSL</span>
+    {% elif cand.vsl == 'No' %}
+      <span class="vsl-badge vsl-no">Declined VSL</span>
+    {% else %}
+      <span class="vsl-badge vsl-no">VSL Unknown</span>
+    {% endif %}
+  </div>
+  {% if cand.committee %}
+    <p style="font-size:13px;color:#64748b;margin-bottom:4px;">{{ cand.committee }}</p>
+  {% endif %}
+  {% if cand.status and cand.status != 'Active' %}
+    <p style="font-size:12px;color:#dc2626;font-weight:600;margin-bottom:16px;">Status: {{ cand.status }}</p>
+  {% else %}
+    <div style="margin-bottom:16px;"></div>
+  {% endif %}
+
+  {# Running For / Status grid #}
+  <div class="detail-row">
+    <div class="detail-item">
+      <div class="dl">Running For</div>
+      <div class="dv"><a href="/races/{{ cand.race_slug }}/">{{ cand.label | fmt_label }}</a></div>
+    </div>
+    <div class="detail-item">
+      <div class="dl">Filing Status</div>
+      <div class="dv">{{ cand.status or 'Active' }}</div>
+    </div>
+  </div>
+
+  {# Fundraising stats #}
+  {% set burn = cand.raised | burn_rate(cand.spent) %}
+  {% set loan_pct = ((cand.loans / (cand.raised + cand.loans) * 100) | round | int ~ '%') if (cand.raised + cand.loans) > 0 else '0%' %}
+  <div class="section-label">Fundraising</div>
+  <div class="stat-grid">
+    <div class="stat-cell">
+      <div class="lbl">Raised</div>
+      <div class="val">{{ cand.raised | fmt_dollars }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Spent</div>
+      <div class="val">{{ cand.spent | fmt_dollars }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Cash on Hand</div>
+      <div class="val">{{ cand.coh | fmt_dollars }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Loans</div>
+      <div class="val">{{ cand.loans | fmt_dollars }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Burn Rate</div>
+      <div class="val">{{ burn }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Loan Reliance</div>
+      <div class="val">{{ loan_pct }}</div>
+    </div>
+  </div>
+
+  {# TRACER link #}
+  {% set tracer_q = (cand.committee or cand.name) | replace(' ', '+') %}
+  <div class="btn-row">
+    <a class="action-btn secondary"
+       href="https://tracer.sos.colorado.gov/PublicSite/SearchPages/CommitteeSearch.aspx?name={{ tracer_q }}"
+       target="_blank" rel="noopener">&#8599; View on TRACER</a>
+  </div>
+
+  {# Placeholder for future contact data #}
+  <div class="section-label">Additional Information</div>
+  <div class="coming-soon-box">
+    <div class="cs-icon">&#128279;</div>
+    <p style="font-weight:600;color:#475569;">Web links &amp; contact info</p>
+    <p>Phone, website, and social media links will appear here when available.</p>
+  </div>
+</div>
+{% endblock %}

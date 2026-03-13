@@ -1,11 +1,35 @@
 #!/usr/bin/env python3
 """
-TRACERMap build script
-Reads data/tracer_2026_all_districts.csv + Colorado legislative district GeoJSON
-and generates map/index.html — a self-contained embeddable map.
+build.py — Core data processing and map/page generation for CHASERMap.
+
+This script has two roles:
+
+1.  **Data pipeline library** — exposes pure functions (load_races,
+    load_statewide_races, shapefile_to_geojson, load_places, build_city_map,
+    and all _fmt_* helpers) that are imported by ingest.py and app.py.
+    These functions are safe to import because no side-effectful code runs at
+    module level — everything is guarded by `if __name__ == "__main__"`.
+
+2.  **Static HTML generator** — when run directly (`python3 build.py`) it
+    executes main(), which:
+      a. Reads data/tracer_2026_all_districts.csv (scraped by scraper.py)
+      b. Downloads / caches Colorado district shapefiles from the US Census
+      c. Generates map/index.html — a fully self-contained Leaflet map with
+         all candidate data embedded as JSON inside <script> tags.
+      d. Generates static race and candidate HTML pages (now superseded by the
+         Flask app, but kept for reference / static hosting fallback).
+
+Data flow:
+    scraper.py  →  data/tracer_2026_all_districts.csv
+                →  data/tracer_2026_statewide.csv
+    build.py    →  data/co_senate_districts.json   (cached shapefile)
+                →  data/co_house_districts.json    (cached shapefile)
+                →  data/co_places.json             (cached place centroids)
+                →  map/index.html                  (Leaflet district map)
+    ingest.py   →  data/chaser.db                  (SQLite for Flask)
 
 Usage:
-    python3 build.py
+    python3 build.py          # regenerate map/index.html from latest CSV data
 """
 
 import csv
@@ -15,7 +39,7 @@ import re
 import urllib.request
 import zipfile
 from pathlib import Path
-import shapefile
+import shapefile  # pyshp — pure-Python shapefile reader (no GDAL required)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -23,52 +47,77 @@ import shapefile
 DATA_DIR = Path(__file__).parent / "data"
 MAP_DIR  = Path(__file__).parent / "map"
 
+# TRACER export CSVs produced by scraper.py
 CSV_FILE         = DATA_DIR / "tracer_2026_all_districts.csv"
 STATEWIDE_CSV    = DATA_DIR / "tracer_2026_statewide.csv"
+
+# Output: the self-contained Leaflet map HTML
 OUTPUT_HTML      = MAP_DIR  / "index.html"
 
+# US Census Bureau cartographic boundary shapefiles for Colorado (2022 vintage).
+# These are ~500k-resolution (simplified) boundaries, suitable for web display.
+# Downloaded once and cached as GeoJSON to avoid repeated HTTP requests.
 SHAPEFILE_URLS = {
     "Senate": "https://www2.census.gov/geo/tiger/GENZ2022/shp/cb_2022_08_sldu_500k.zip",
     "House":  "https://www2.census.gov/geo/tiger/GENZ2022/shp/cb_2022_08_sldl_500k.zip",
 }
+# Local cache paths for the converted GeoJSON files
 GEOJSON_CACHE = {
     "Senate": DATA_DIR / "co_senate_districts.json",
     "House":  DATA_DIR / "co_house_districts.json",
 }
-# Field name in the shapefile attributes that holds the district number code
+# Attribute field in the shapefile's DBF that contains the district number.
+# SLDUST = State Legislative District Upper (Senate), SLDLST = Lower (House).
 DISTRICT_FIELD = {
     "Senate": "SLDUST",
     "House":  "SLDLST",
 }
 
-PLACES_URL   = "https://www2.census.gov/geo/tiger/TIGER2022/PLACE/tl_2022_08_place.zip"
-PLACES_CACHE      = DATA_DIR / "co_places.json"
+# Colorado incorporated places shapefile from TIGER/Line (for city-to-district mapping)
+PLACES_URL        = "https://www2.census.gov/geo/tiger/TIGER2022/PLACE/tl_2022_08_place.zip"
+PLACES_CACHE      = DATA_DIR / "co_places.json"     # cached centroid lookup
+
+# Official CO legislature roster (Excel) — used for incumbent detection.
+# Download from: https://leg.colorado.gov/legislators
 LEGISLATORS_FILE  = DATA_DIR / "co_legislators.xlsx"
 
 # ---------------------------------------------------------------------------
 # Incumbent detection
 # ---------------------------------------------------------------------------
 
+# Regex to strip generational suffixes before name comparison.
+# Handles "JR", "JR.", "SR", "SR.", "II", "III", "IV", "V" (case-insensitive).
 _SUFFIX_RE = re.compile(r'\b(JR\.?|SR\.?|II|III|IV|V)\b\.?', re.IGNORECASE)
 
-# Incumbents who file under a nickname differing from their legal first name.
-# Maps (chamber, district) -> the first name as it appears in TRACER.
+# Some incumbents file campaign finance reports under a preferred name that
+# differs from the official roster name.  These overrides map (chamber, district)
+# to the first name *as it appears in TRACER*, so the match logic uses the
+# TRACER name directly rather than the legislature's name.
 _NICKNAME_FIRST_NAMES: dict[tuple, str] = {
     ("Senate", "11"): "THOMAS",   # Tony Exum Sr. files as Thomas E. Exum Sr.
     ("House",  "40"): "NIKKI",    # Naquetta Ricks files as Nikki Ricks
 }
 
-# Incumbents not in the Excel file (e.g. mid-session appointments, corrections)
-# Maps (chamber, district) -> TRACER last name (upper, suffix-stripped)
+# Legislators who are not present in the official Excel file (e.g. mid-session
+# appointments or corrections) but should still be flagged as incumbents.
+# Keyed by (chamber, district), value is the last name in TRACER (upper-case,
+# suffix already stripped).
 _EXTRA_INCUMBENTS: dict[tuple, str] = {
     ("House", "33"): "NGUYEN",    # Kenny Nguyen (HD-33)
 }
 
 
 def load_incumbents() -> dict:
-    """
-    Load current CO legislators from the official Excel export.
-    Returns {(chamber, district): (last_upper, first_upper)}.
+    """Load the current Colorado legislators from the official Excel roster.
+
+    The workbook has two sheets — "Representatives" (House) and "Senators"
+    (Senate).  Data rows start at row 3 (row 1 = header, row 2 = blank).
+    Expected column layout (0-indexed): ... [1]=first, [2]=last, [6]=district.
+
+    Returns:
+        dict mapping (chamber, district_str) → (last_upper, first_upper)
+        e.g. {("Senate", "3"): ("BRIDGES", "JEFF"), ...}
+        Returns {} if openpyxl is not installed or the file is missing.
     """
     try:
         import openpyxl
@@ -86,56 +135,74 @@ def load_incumbents() -> dict:
             continue
         ws = wb[sheet]
         for row in ws.iter_rows(min_row=3, values_only=True):
-            if not row[1]:
+            if not row[1]:  # skip blank rows
                 continue
             first = row[1].upper().strip()
             last  = row[2].upper().strip()
-            dist  = str(int(row[6]))
+            dist  = str(int(row[6]))  # normalize "03" → "3"
             result[(chamber, dist)] = (last, first)
     print(f"  Loaded {len(result)} incumbents from {LEGISLATORS_FILE.name}")
     return result
 
 
 def is_incumbent(name: str, chamber: str, dist: str, incumbents: dict) -> bool:
-    """
-    Return True if the TRACER candidate name matches the current incumbent
-    for (chamber, dist).  Handles:
-      - Generational suffixes in TRACER (Jr./Sr./IV stripped before compare)
-      - Compound last names (e.g. 'WILSON' matches incumbent 'ZAMORA WILSON')
-      - Middle name used as preferred first (e.g. 'TIMOTHY JARVIS' -> JARVIS)
-      - Short-form first names (e.g. 'RODNEY' matches 'ROD' via 3-char prefix)
-      - Explicit nickname overrides in _NICKNAME_FIRST_NAMES
-      - Extra incumbents in _EXTRA_INCUMBENTS
+    """Return True if the TRACER candidate name matches the sitting incumbent.
+
+    TRACER names are stored as "LAST, FIRST MIDDLE" in all-caps.  The
+    official roster uses a different format and may omit suffixes.  This
+    function handles several real-world mismatches:
+
+      - Generational suffixes  — stripped via _SUFFIX_RE before comparison
+      - Compound last names    — e.g. TRACER "WILSON" matches roster "ZAMORA WILSON"
+      - Middle-name-as-first   — e.g. TRACER "TIMOTHY JARVIS" where roster has "JARVIS"
+      - Short-form first names — e.g. "RODNEY" matches "ROD" via 3-char prefix check
+      - Explicit nickname map  — _NICKNAME_FIRST_NAMES overrides per (chamber, dist)
+      - Extra incumbents       — _EXTRA_INCUMBENTS handles omissions in the Excel file
+
+    Args:
+        name:       Candidate name from TRACER CSV, format "LAST, FIRST [MIDDLE]".
+        chamber:    "Senate" or "House".
+        dist:       District number string, e.g. "3".
+        incumbents: Dict returned by load_incumbents().
+
+    Returns:
+        True if the candidate is the current incumbent for this seat.
     """
     info = incumbents.get((chamber, dist))
 
-    # Check _EXTRA_INCUMBENTS first (last-name-only match)
+    # Check _EXTRA_INCUMBENTS first — these are last-name-only matches for
+    # legislators not present in the Excel file.
     extra_last = _EXTRA_INCUMBENTS.get((chamber, dist))
 
+    # Parse TRACER name: "LAST, FIRST MIDDLE [JR.]" → separate components
     parts = name.strip().upper().split(",", 1)
     raw_last        = parts[0].strip()
     raw_first_field = parts[1].strip() if len(parts) > 1 else ""
-    tracer_last     = _SUFFIX_RE.sub("", raw_last).strip()
+    tracer_last     = _SUFFIX_RE.sub("", raw_last).strip()   # strip Jr./Sr./II/etc.
     tracer_first    = raw_first_field.split()[0] if raw_first_field else ""
 
+    # Extra-incumbent override: last-name check only
     if extra_last and tracer_last == extra_last:
         return True
 
     if not info:
-        return False
+        return False  # no incumbent on record for this seat
     leg_last, leg_first = info
 
-    # Last-name match (handles compound names like 'ZAMORA WILSON' vs 'WILSON')
+    # Last-name match — also accepts TRACER last being one word of a compound
+    # roster name (e.g. TRACER "WILSON" matches roster "ZAMORA WILSON")
     last_match = tracer_last == leg_last or tracer_last in leg_last.split()
     if not last_match:
         return False
 
-    # Use nickname override first name if provided, otherwise legislator first
+    # Resolve effective first name: use the nickname override if one exists,
+    # otherwise fall back to the legislator roster first name.
     eff_first = _NICKNAME_FIRST_NAMES.get((chamber, dist), leg_first)
+
     return (
-        tracer_first == eff_first or                # exact match
-        tracer_first.startswith(eff_first[:3]) or   # prefix (ROD/RODNEY, CHA/CHAD)
-        eff_first in raw_first_field.split()         # leg first is a middle name in TRACER
+        tracer_first == eff_first or                # exact first-name match
+        tracer_first.startswith(eff_first[:3]) or   # prefix match (ROD/RODNEY)
+        eff_first in raw_first_field.split()         # roster first is a middle name in TRACER
     )
 
 
@@ -144,27 +211,63 @@ def is_incumbent(name: str, chamber: str, dist: str, incumbents: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 def load_races() -> dict:
-    """
+    """Read the TRACER legislative CSV and build a nested candidate data structure.
+
+    This is the primary data-loading function for legislative (Senate + House)
+    races.  It is imported by ingest.py and called during the database build.
+
+    Reads:
+        data/tracer_2026_all_districts.csv  (produced by scraper.py)
+
     Returns:
-        { "Senate": { "3": { label, candidates: [...] } }, "House": { ... } }
+        A nested dict keyed by chamber → district number → race data:
+        {
+          "Senate": {
+            "3": {
+              "label":      "Senate District 3",
+              "candidates": [
+                {
+                  "name":      "SMITH, JOHN A",   # raw TRACER format (LAST, FIRST)
+                  "party":     "Democratic",
+                  "committee": "Friends of John Smith",
+                  "status":    "Active",           # or "Terminated"
+                  "raised":    125000.0,           # MonetaryContributions
+                  "spent":     87000.0,            # MonetaryExpenditures
+                  "coh":       38000.0,            # EndFundsOnHand (cash on hand)
+                  "beg":       0.0,                # BegFundsOnHand (beginning balance)
+                  "loans":     0.0,                # LoansReceived (self-loans)
+                  "vsl":       "Y",                # AcceptedVSL (voluntary spending limit)
+                  "incumbent": True,
+                },
+                ...
+              ]
+            },
+            ...
+          },
+          "House": { ... }
+        }
     """
     races = {"Senate": {}, "House": {}}
-    incumbents = load_incumbents()
+    incumbents = load_incumbents()  # loads the Excel roster for incumbent detection
 
     with open(CSV_FILE, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             chamber = row["Chamber"]        # "Senate" | "House"
-            dist    = str(int(row["DistrictNumber"]))  # "1"..."65"
+            # Normalize district number: "03" → "3" (consistent with GeoJSON)
+            dist    = str(int(row["DistrictNumber"]))
 
             if chamber not in races:
-                continue
+                continue  # skip any unexpected chamber values
 
+            # Initialize the district entry on first encounter
             if dist not in races[chamber]:
                 races[chamber][dist] = {
                     "label":      row["DistrictLabel"],
                     "candidates": [],
                 }
 
+            # Build candidate dict from CSV row.
+            # Float conversion with `or 0` handles empty strings from TRACER.
             races[chamber][dist]["candidates"].append({
                 "name":      row["CandName"],
                 "party":     row["Party"],
@@ -183,10 +286,25 @@ def load_races() -> dict:
 
 
 def load_statewide_races() -> dict:
-    """
+    """Read the TRACER statewide CSV and build the statewide candidate structure.
+
+    Similar to load_races() but for the five Colorado executive offices
+    (Governor, Lt. Governor, Secretary of State, State Treasurer, AG).
+    Incumbent detection is not performed for statewide races.
+
+    Reads:
+        data/tracer_2026_statewide.csv  (produced by: python3 scraper.py --statewide)
+
     Returns:
-        { "Governor": {"label": "Governor", "candidates": [...]}, ... }
-    Returns {} gracefully if tracer_2026_statewide.csv does not exist yet.
+        {
+          "Governor": {
+            "label": "Governor",
+            "candidates": [{ name, party, committee, status, raised, spent,
+                              coh, loans, vsl, incumbent=False }, ...]
+          },
+          ...
+        }
+        Returns {} gracefully if the statewide CSV has not been scraped yet.
     """
     if not STATEWIDE_CSV.exists():
         print("  (no statewide CSV — run: python3 scraper.py --statewide)")
@@ -221,19 +339,39 @@ def load_statewide_races() -> dict:
 # ---------------------------------------------------------------------------
 
 def shapefile_to_geojson(chamber: str, precision: int = 5) -> dict:
-    """
-    Download the Census cartographic boundary shapefile zip for Colorado,
-    parse it with pyshp, and return a minimal GeoJSON FeatureCollection.
-    Results are cached to avoid re-downloading.
+    """Download (or load cached) Colorado district boundaries as GeoJSON.
+
+    Downloads the US Census cartographic boundary shapefile for Colorado's
+    state legislative districts, converts it to a minimal GeoJSON
+    FeatureCollection, and caches the result locally so subsequent runs
+    don't re-download.
+
+    The shapefile ZIP contains .shp (geometry), .dbf (attributes), and
+    .shx (index) files.  pyshp (the `shapefile` package) reads all three
+    from in-memory BytesIO objects — no temporary files needed.
+
+    Coordinate precision is rounded to 5 decimal places (~1 metre accuracy)
+    to reduce the JSON file size without visible map degradation.
+
+    Args:
+        chamber:   "Senate" or "House"
+        precision: Decimal places to round coordinates (default 5)
+
+    Returns:
+        A GeoJSON FeatureCollection dict.  Each feature has:
+            { "type": "Feature",
+              "properties": {"district": "3"},   # district number as string
+              "geometry":   { "type": ..., "coordinates": [...] } }
     """
     cache = GEOJSON_CACHE[chamber]
+    # Return cached GeoJSON if it exists — avoids re-downloading on every run
     if cache.exists():
         print(f"  Using cached {cache.name}")
         with open(cache, encoding="utf-8") as f:
             return json.load(f)
 
     url    = SHAPEFILE_URLS[chamber]
-    dfield = DISTRICT_FIELD[chamber]
+    dfield = DISTRICT_FIELD[chamber]  # which DBF attribute holds the district number
 
     print(f"  Downloading {chamber} shapefile from Census...")
     with urllib.request.urlopen(url, timeout=60) as r:
@@ -243,22 +381,28 @@ def shapefile_to_geojson(chamber: str, precision: int = 5) -> dict:
     features = []
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        # Find the .shp, .dbf, .shx files inside the zip
-        names   = zf.namelist()
+        # Locate the three component files by extension within the ZIP archive
+        names    = zf.namelist()
         shp_name = next(n for n in names if n.endswith(".shp"))
         dbf_name = next(n for n in names if n.endswith(".dbf"))
         shx_name = next(n for n in names if n.endswith(".shx"))
 
+        # Read each component into memory as a BytesIO stream so pyshp can
+        # parse them without writing temporary files to disk.
         shp = io.BytesIO(zf.read(shp_name))
         dbf = io.BytesIO(zf.read(dbf_name))
         shx = io.BytesIO(zf.read(shx_name))
 
         sf = shapefile.Reader(shp=shp, dbf=dbf, shx=shx)
-        field_names = [f[0] for f in sf.fields[1:]]  # skip deletion flag
+        # sf.fields[0] is the deletion flag — skip it to get the real attribute names
+        field_names = [f[0] for f in sf.fields[1:]]
 
         def round_coords(obj):
+            """Recursively round coordinate values to `precision` decimal places.
+            Works for any depth of nested lists (Polygon, MultiPolygon, etc.)."""
             if isinstance(obj, list):
                 if obj and isinstance(obj[0], (int, float)):
+                    # Leaf node: [longitude, latitude]
                     return [round(obj[0], precision), round(obj[1], precision)]
                 return [round_coords(c) for c in obj]
             return obj
@@ -267,10 +411,12 @@ def shapefile_to_geojson(chamber: str, precision: int = 5) -> dict:
             props = dict(zip(field_names, rec))
             dist_code = props.get(dfield, "")
             try:
+                # Normalize "003" or "03" → "3" to match the CSV district numbers
                 dist_num = str(int(dist_code))
             except (ValueError, TypeError):
-                continue
+                continue  # skip features with non-numeric district codes
 
+            # __geo_interface__ converts pyshp's shape to a GeoJSON-compatible dict
             geom = shape.__geo_interface__
             features.append({
                 "type": "Feature",
@@ -283,6 +429,7 @@ def shapefile_to_geojson(chamber: str, precision: int = 5) -> dict:
 
     result = {"type": "FeatureCollection", "features": features}
 
+    # Cache for future runs
     with open(cache, "w", encoding="utf-8") as f:
         json.dump(result, f)
     print(f"  Cached → {cache.name}  ({len(features)} polygons)")
@@ -294,10 +441,17 @@ def shapefile_to_geojson(chamber: str, precision: int = 5) -> dict:
 # ---------------------------------------------------------------------------
 
 def load_places() -> dict:
-    """
-    Download Colorado incorporated places from Census TIGER/Line.
-    Returns {name: [lon, lat]} using each place's bounding-box centroid.
-    Cached to co_places.json.
+    """Download (or load cached) Colorado incorporated place centroids.
+
+    Uses the Census TIGER/Line Places shapefile to build a lookup of city
+    name → approximate centroid coordinates.  The centroid is estimated as
+    the midpoint of the feature's bounding box, which is sufficient accuracy
+    for the point-in-polygon district lookup that follows.
+
+    Returns:
+        { "Denver": [-104.9903, 39.7392], "Aurora": [...], ... }
+        Keys are place NAME strings from the shapefile's DBF attributes.
+        Cached to data/co_places.json after the first download.
     """
     if PLACES_CACHE.exists():
         print(f"  Using cached {PLACES_CACHE.name}")
@@ -339,8 +493,25 @@ def load_places() -> dict:
 
 
 def _point_in_polygon(px: float, py: float, feature: dict) -> bool:
-    """Ray-casting point-in-polygon for a GeoJSON Feature (Polygon or MultiPolygon).
-    Tests only outer rings, which is sufficient for city-centroid lookups."""
+    """Test whether a point lies inside a GeoJSON polygon feature.
+
+    Uses the ray-casting algorithm (even-odd rule): counts how many times a
+    horizontal ray cast from the test point crosses the polygon boundary.
+    An odd number of crossings means the point is inside.
+
+    Only the outer ring of each polygon/multi-polygon is tested.  Holes
+    (inner rings) are ignored, which is acceptable here because city
+    centroids are unlikely to fall exactly in a lake or park cutout.
+
+    Args:
+        px:      Longitude of the test point.
+        py:      Latitude of the test point.
+        feature: GeoJSON Feature dict with geometry of type Polygon or
+                 MultiPolygon.
+
+    Returns:
+        True if the point is inside any polygon ring of the feature.
+    """
     geom  = feature["geometry"]
     gtype = geom["type"]
     rings = (
@@ -361,9 +532,26 @@ def _point_in_polygon(px: float, py: float, feature: dict) -> bool:
 
 
 def build_city_map(geojson_senate: dict, geojson_house: dict, places: dict) -> dict:
-    """
-    For each legislative district find which place centroids fall inside it.
-    Returns {Senate: {dist_num: [city, ...]}, House: {dist_num: [city, ...]}}.
+    """Build a mapping of legislative districts to the cities they contain.
+
+    For every Senate and House district polygon, tests each place centroid
+    against the polygon using _point_in_polygon().  Cities whose centroids
+    fall inside a district are assigned to it.
+
+    This runs O(districts × places), which is manageable (~200 districts ×
+    ~500 places = ~100k checks) and runs in a few seconds.
+
+    Args:
+        geojson_senate: FeatureCollection dict from shapefile_to_geojson("Senate")
+        geojson_house:  FeatureCollection dict from shapefile_to_geojson("House")
+        places:         { city_name: [lon, lat] } from load_places()
+
+    Returns:
+        {
+          "Senate": { "3": ["Denver", "Glendale", ...], "4": [...], ... },
+          "House":  { "6": ["Aurora", ...], ... }
+        }
+        Districts with no matching place centroids are omitted from the dict.
     """
     city_map    = {"Senate": {}, "House": {}}
     gj_chambers = {"Senate": geojson_senate, "House": geojson_house}
@@ -1440,6 +1628,16 @@ _CANDIDATES_DIR = _ROOT_DIR / "candidates"
 
 
 def _fmt_dollars(n: float) -> str:
+    """Format a dollar amount as a compact human-readable string.
+
+    Thresholds:
+        ≥ $1,000,000 → "$1.2M"    (1 decimal, millions suffix)
+        ≥ $1,000     → "$12,345"  (comma-separated, no cents)
+        < $1,000     → "$45"      (no cents)
+
+    Used as a Jinja2 filter ({{ candidate.raised | fmt_dollars }})
+    and directly in the generated HTML map.
+    """
     if n >= 1_000_000:
         return f"${n / 1_000_000:.1f}M"
     if n >= 1_000:
@@ -1459,6 +1657,15 @@ def _fmt_name(tracer_name: str) -> str:
 
 
 def _slugify(text: str) -> str:
+    """Convert a string to a URL-safe slug.
+
+    Steps: lowercase → strip non-word chars → collapse whitespace/underscores
+    to hyphens → deduplicate hyphens → trim leading/trailing hyphens.
+
+    Examples:
+        "Senate District 3"  → "senate-district-3"
+        "Attorney General"   → "attorney-general"
+    """
     t = text.lower().strip()
     t = re.sub(r"[^\w\s-]", "", t)
     t = re.sub(r"[\s_]+", "-", t)
@@ -1466,8 +1673,19 @@ def _slugify(text: str) -> str:
 
 
 def _candidate_slug(name: str, context: str) -> str:
-    """context: 'House-44' for legislative, 'Governor' for statewide.
-    Returns slug like 'dana-charles-house-44'."""
+    """Generate a unique URL slug for a candidate.
+
+    Combines the candidate's first + last name with the race context to
+    create slugs that are unique even when two candidates share a last name.
+
+    Args:
+        name:    TRACER name string "LAST, FIRST [MIDDLE]"
+        context: "House-44" or "Senate-3" for legislative;
+                 office name (e.g. "Governor") for statewide.
+
+    Returns:
+        Slug string e.g. "john-smith-house-44" or "jane-doe-governor".
+    """
     parts = name.strip().split(",", 1)
     last  = _slugify(parts[0])
     first = _slugify(parts[1].strip().split()[0]) if len(parts) > 1 and parts[1].strip() else ""
@@ -1486,6 +1704,12 @@ def _party_badge(party: str) -> str:
 
 
 def _burn_rate(spent: float, raised: float) -> str:
+    """Calculate the percentage of raised funds that have been spent.
+
+    Returns "—" when raised is 0 to avoid division-by-zero.
+    Used as a Jinja2 filter: {{ cand.raised | burn_rate(cand.spent) }}
+    Note: the filter is registered with args swapped (see app.py).
+    """
     return f"{spent / raised * 100:.0f}%" if raised > 0 else "—"
 
 
