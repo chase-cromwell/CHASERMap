@@ -1411,12 +1411,818 @@ document.getElementById('vsl-toggle').addEventListener('change', e => {
 });
 
 // ── Init ──────────────────────────────────────────────
+// URL param deep-link: /map/?chamber=House&district=44
+(function() {
+  const p = new URLSearchParams(location.search);
+  const ch = p.get('chamber'), dist = p.get('district');
+  if (ch && ['Senate','House'].includes(ch)) {
+    activeChamber = ch;
+    document.querySelectorAll('.chamber-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.chamber === ch));
+  }
+  if (dist) setTimeout(() => openSidebar(activeChamber, dist), 100);
+})();
 updateLegend();
 buildLayer(activeChamber);
 </script>
 </body>
 </html>
 """
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — Homepage, race pages, and candidate detail pages
+# ---------------------------------------------------------------------------
+
+_ROOT_DIR       = Path(__file__).parent
+_RACES_DIR      = _ROOT_DIR / "races"
+_CANDIDATES_DIR = _ROOT_DIR / "candidates"
+
+
+def _fmt_dollars(n: float) -> str:
+    if n >= 1_000_000:
+        return f"${n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"${n:,.0f}"
+    return f"${n:.0f}"
+
+
+def _fmt_name(tracer_name: str) -> str:
+    """'LAST, FIRST MIDDLE' → 'First Last'"""
+    parts = tracer_name.strip().split(",", 1)
+    last = parts[0].strip().title()
+    if len(parts) > 1:
+        tokens = parts[1].strip().split()
+        first = tokens[0].title() if tokens else ""
+        return f"{first} {last}".strip() if first else last
+    return last
+
+
+def _slugify(text: str) -> str:
+    t = text.lower().strip()
+    t = re.sub(r"[^\w\s-]", "", t)
+    t = re.sub(r"[\s_]+", "-", t)
+    return re.sub(r"-+", "-", t).strip("-")
+
+
+def _candidate_slug(name: str, context: str) -> str:
+    """context: 'House-44' for legislative, 'Governor' for statewide.
+    Returns slug like 'dana-charles-house-44'."""
+    parts = name.strip().split(",", 1)
+    last  = _slugify(parts[0])
+    first = _slugify(parts[1].strip().split()[0]) if len(parts) > 1 and parts[1].strip() else ""
+    suffix = _slugify(context)
+    return f"{first}-{last}-{suffix}" if first else f"{last}-{suffix}"
+
+
+def _fmt_label(label: str) -> str:
+    """Normalize district labels to title case ('HOUSE DISTRICT 44' → 'House District 44')."""
+    return label.title()
+
+
+def _party_badge(party: str) -> str:
+    cls = {"Democratic": "badge-D", "Republican": "badge-R"}.get(party, "badge-other")
+    return f'<span class="party-badge {cls}">{party}</span>'
+
+
+def _burn_rate(spent: float, raised: float) -> str:
+    return f"{spent / raised * 100:.0f}%" if raised > 0 else "—"
+
+
+_SHARED_CSS = """\
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  min-height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f8fafc; color: #0f172a;
+}
+a { color: #2563eb; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.site-nav {
+  display: flex; align-items: center; gap: 16px; padding: 0 20px;
+  background: #1e293b; color: #f1f5f9; height: 50px;
+  position: sticky; top: 0; z-index: 100;
+}
+.nav-brand { font-size: 14px; font-weight: 700; color: #e2e8f0; text-decoration: none; }
+.nav-links { display: flex; gap: 16px; margin-left: auto; }
+.nav-links a { font-size: 13px; color: #94a3b8; text-decoration: none; }
+.nav-links a:hover { color: #e2e8f0; }
+.nav-links a.active { color: #fff; font-weight: 600; }
+.container { max-width: 900px; margin: 0 auto; padding: 32px 20px; }
+.page-title { font-size: 22px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+.page-subtitle { font-size: 14px; color: #64748b; margin-bottom: 24px; }
+.section-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: #64748b; margin: 24px 0 10px;
+}
+.party-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
+  text-transform: uppercase; letter-spacing: .04em; display: inline-block;
+}
+.badge-D     { background: #dbeafe; color: #1e40af; }
+.badge-R     { background: #fee2e2; color: #991b1b; }
+.badge-other { background: #f3f4f6; color: #4b5563; }
+.incumbent-badge {
+  font-size: 10px; font-weight: 700; background: #ede9fe; color: #6d28d9;
+  border-radius: 10px; padding: 2px 8px; display: inline-block;
+}
+.vsl-badge {
+  font-size: 10px; font-weight: 700; border-radius: 10px;
+  padding: 2px 8px; display: inline-block;
+}
+.vsl-yes { background: #dcfce7; color: #15803d; }
+.vsl-no  { background: #fee2e2; color: #991b1b; }
+.stat-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0;
+}
+.stat-cell {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px;
+}
+.stat-cell .lbl {
+  font-size: 10px; color: #64748b; text-transform: uppercase;
+  letter-spacing: .05em; margin-bottom: 4px;
+}
+.stat-cell .val { font-size: 17px; font-weight: 700; color: #0f172a; }
+.party-bar-wrap { margin: 16px 0; }
+.party-bar-labels { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+.party-bar-labels .dem { color: #1a56db; font-weight: 700; }
+.party-bar-labels .rep { color: #e02424; font-weight: 700; }
+.party-bar-track {
+  height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; position: relative;
+}
+.party-bar-fill {
+  position: absolute; left: 0; top: 0; height: 100%;
+  background: linear-gradient(to right, #1a56db, #93c5fd); border-radius: 5px;
+}
+.cand-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.cand-row {
+  display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px;
+  text-decoration: none; color: inherit; transition: border-color .15s, box-shadow .15s;
+}
+.cand-row:hover {
+  border-color: #93c5fd; box-shadow: 0 2px 8px rgba(37,99,235,.08); text-decoration: none;
+}
+.cand-row.inactive { opacity: .65; }
+.cand-row-left { flex: 1; min-width: 0; }
+.cand-row-name { font-size: 14px; font-weight: 600; color: #0f172a; margin-bottom: 4px; }
+.cand-row-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cand-row-committee { font-size: 11px; color: #94a3b8; margin-top: 3px; }
+.cand-row-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.cand-row-raised { font-size: 15px; font-weight: 700; color: #0f172a; }
+.cand-row-raised-lbl { font-size: 10px; color: #94a3b8; text-transform: uppercase; }
+.back-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: #64748b; margin-bottom: 20px;
+}
+.back-link:hover { color: #0f172a; text-decoration: none; }
+.city-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.city-pill {
+  font-size: 12px; background: #f1f5f9; border: 1px solid #e2e8f0;
+  border-radius: 20px; padding: 3px 10px; color: #475569;
+}
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0; }
+.action-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #1e293b; color: #f1f5f9;
+  padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  text-decoration: none; transition: background .15s;
+}
+.action-btn:hover { background: #334155; text-decoration: none; color: #f1f5f9; }
+.action-btn.secondary {
+  background: #fff; color: #374151; border: 1px solid #d1d5db;
+}
+.action-btn.secondary:hover { background: #f9fafb; color: #374151; }
+.detail-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;
+}
+.detail-item .dl {
+  font-size: 11px; color: #64748b; text-transform: uppercase;
+  letter-spacing: .05em; margin-bottom: 3px;
+}
+.detail-item .dv { font-size: 14px; color: #0f172a; font-weight: 500; }
+.coming-soon-box {
+  text-align: center; padding: 40px 20px; background: #fff;
+  border: 2px dashed #e2e8f0; border-radius: 12px; color: #94a3b8;
+}
+.coming-soon-box .cs-icon { font-size: 36px; margin-bottom: 12px; }
+.coming-soon-box p { font-size: 14px; margin-bottom: 6px; }
+"""
+
+
+def _nav_html(active: str = "home") -> str:
+    items = ""
+    for key, url, label in [("home", "/", "Home"), ("map", "/map/", "Map")]:
+        cls = ' class="active"' if key == active else ""
+        items += f'<a href="{url}"{cls}>{label}</a>'
+    return (
+        '<nav class="site-nav">'
+        '<a href="/" class="nav-brand">Colorado 2026 Legislative Fundraising</a>'
+        f'<div class="nav-links">{items}</div>'
+        '</nav>'
+    )
+
+
+# ── Homepage ──────────────────────────────────────────────────────────────
+
+_HOMEPAGE_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Colorado 2026 Legislative Fundraising</title>
+<style>
+__SHARED_CSS__
+.hero {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  padding: 56px 20px 48px; text-align: center; color: #f1f5f9;
+}
+.hero h1 {
+  font-size: 28px; font-weight: 800; color: #fff;
+  margin-bottom: 8px; letter-spacing: -.02em;
+}
+.hero p { font-size: 15px; color: #94a3b8; margin-bottom: 32px; }
+.search-outer { position: relative; max-width: 540px; margin: 0 auto; }
+.search-bar {
+  width: 100%; padding: 14px 20px; font-size: 15px;
+  border: 2px solid #334155; background: #1e293b; color: #f1f5f9;
+  border-radius: 12px; outline: none; transition: border-color .2s;
+}
+.search-bar::placeholder { color: #475569; }
+.search-bar:focus { border-color: #3b82f6; }
+.search-hint { margin-top: 10px; font-size: 12px; color: #475569; }
+#hp-results {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  width: 100%; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  z-index: 200; overflow: hidden; max-height: 420px; overflow-y: auto; text-align: left;
+}
+#hp-results.visible { display: block; }
+.sr-section-head {
+  padding: 8px 14px 4px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em; color: #94a3b8;
+  border-top: 1px solid #f1f5f9;
+}
+.sr-section-head:first-child { border-top: none; }
+.sr-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  cursor: pointer; border-bottom: 1px solid #f8fafc;
+  text-decoration: none; color: inherit;
+}
+.sr-item:last-child { border-bottom: none; }
+.sr-item:hover { background: #f8fafc; }
+.sr-type {
+  font-size: 10px; font-weight: 700; padding: 2px 7px;
+  border-radius: 4px; flex-shrink: 0;
+}
+.sr-type-race { background: #334155; color: #e2e8f0; }
+.sr-type-cand { background: #dbeafe; color: #1e40af; }
+.sr-body { flex: 1; min-width: 0; }
+.sr-title { font-size: 13px; font-weight: 600; color: #0f172a; }
+.sr-sub {
+  font-size: 11px; color: #64748b; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sr-empty { padding: 16px; text-align: center; color: #94a3b8; font-size: 13px; }
+.cards-section {
+  max-width: 900px; margin: 40px auto; padding: 0 20px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;
+}
+.feature-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+  padding: 24px 20px; transition: all .2s;
+  text-decoration: none; color: inherit; display: flex; flex-direction: column;
+  cursor: pointer;
+}
+.feature-card:hover {
+  border-color: #93c5fd; box-shadow: 0 4px 20px rgba(37,99,235,.1); text-decoration: none;
+}
+.feature-card.disabled { cursor: default; opacity: .65; }
+.feature-card.disabled:hover { border-color: #e2e8f0; box-shadow: none; }
+.card-icon { font-size: 28px; margin-bottom: 12px; }
+.card-title { font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+.card-desc { font-size: 13px; color: #64748b; line-height: 1.5; flex: 1; }
+.card-badge {
+  display: inline-block; margin-top: 12px; font-size: 11px; font-weight: 600;
+  padding: 3px 10px; border-radius: 20px; background: #f1f5f9; color: #64748b;
+}
+.card-cta { margin-top: 16px; font-size: 13px; color: #3b82f6; font-weight: 600; }
+</style>
+</head>
+<body>
+__NAV__
+<div class="hero">
+  <h1>Colorado 2026 Campaign Finance</h1>
+  <p>Explore fundraising data for all legislative and statewide races.</p>
+  <div class="search-outer">
+    <input id="hp-search" class="search-bar" type="text"
+           placeholder="Search races, candidates, cities&#8230;" autocomplete="off">
+    <div id="hp-results"></div>
+  </div>
+  <p class="search-hint">Try &ldquo;House District 44&rdquo;, &ldquo;Denver&rdquo;, or a candidate name</p>
+</div>
+<div class="cards-section">
+  <div class="feature-card" onclick="focusSearch()">
+    <div class="card-icon">&#128499;&#65039;</div>
+    <div class="card-title">Find a Race</div>
+    <div class="card-desc">Browse all House and Senate districts and statewide offices. See every candidate and their fundraising totals.</div>
+    <div class="card-cta">Search above &#8593;</div>
+  </div>
+  <div class="feature-card" onclick="focusSearch()">
+    <div class="card-icon">&#128100;</div>
+    <div class="card-title">Find a Candidate</div>
+    <div class="card-desc">Look up any candidate by name or committee to see their full financial breakdown.</div>
+    <div class="card-cta">Search above &#8593;</div>
+  </div>
+  <div class="feature-card disabled">
+    <div class="card-icon">&#128176;</div>
+    <div class="card-title">Find a Donor</div>
+    <div class="card-desc">Search contributions by donor name to see all donations made across Colorado campaigns.</div>
+    <span class="card-badge">Coming Soon</span>
+  </div>
+  <a class="feature-card" href="/map/">
+    <div class="card-icon">&#128506;&#65039;</div>
+    <div class="card-title">Browse the Map</div>
+    <div class="card-desc">Explore campaign finance data geographically &mdash; click any district to see all candidates.</div>
+    <div class="card-cta">Open Map &rarr;</div>
+  </a>
+</div>
+<script>
+const RACES    = __RACES_JSON__;
+const STATEWIDE = __STATEWIDE_JSON__;
+const CITY_MAP = __CITY_MAP_JSON__;
+
+function slugify(t) {
+  return t.toLowerCase().trim()
+    .replace(/[^\w\s-]/g,'').replace(/[\s_]+/g,'-')
+    .replace(/-+/g,'-').replace(/^-|-$/g,'');
+}
+function fmtName(s) {
+  const p = s.trim().split(',');
+  const last = p[0].trim().replace(/\b\w/g, c => c.toUpperCase());
+  if (p.length > 1) {
+    const first = p[1].trim().split(/\s+/)[0].replace(/\b\w/g, c => c.toUpperCase());
+    return first + ' ' + last;
+  }
+  return last;
+}
+function candSlug(name, ctx) {
+  const p = name.trim().split(',');
+  const last = slugify(p[0]);
+  const first = p.length > 1 ? slugify(p[1].trim().split(/\s+/)[0]) : '';
+  const suf = slugify(ctx);
+  return first ? first + '-' + last + '-' + suf : last + '-' + suf;
+}
+
+const idx = [];
+['Senate','House'].forEach(ch => {
+  Object.entries(RACES[ch] || {}).forEach(([dist, data]) => {
+    const cities = CITY_MAP[ch]?.[dist] || [];
+    const names  = data.candidates.map(c => c.name);
+    const comms  = data.candidates.map(c => c.committee).filter(Boolean);
+    idx.push({
+      type:'race', label:data.label,
+      url: '/races/' + ch.toLowerCase() + '-' + dist + '/',
+      sub: cities.slice(0,3).join(', ') || (data.candidates.length + ' candidates'),
+      text: [data.label, ...cities, ...names, ...comms].join(' ').toLowerCase(),
+    });
+    data.candidates.forEach(c => {
+      idx.push({
+        type:'candidate', label:fmtName(c.name), party:c.party,
+        url: '/candidates/' + candSlug(c.name, ch + '-' + dist) + '/',
+        sub: c.party + ' \u00b7 ' + data.label,
+        text: [c.name, c.committee||'', data.label, ...cities].join(' ').toLowerCase(),
+      });
+    });
+  });
+});
+Object.entries(STATEWIDE).forEach(([office, data]) => {
+  idx.push({
+    type:'race', label:office,
+    url: '/races/' + slugify(office) + '/',
+    sub: data.candidates.length + ' candidates \u00b7 Statewide',
+    text: [office, ...data.candidates.map(c => c.name)].join(' ').toLowerCase(),
+  });
+  data.candidates.forEach(c => {
+    idx.push({
+      type:'candidate', label:fmtName(c.name), party:c.party,
+      url: '/candidates/' + candSlug(c.name, office) + '/',
+      sub: c.party + ' \u00b7 ' + office,
+      text: [c.name, c.committee||'', office].join(' ').toLowerCase(),
+    });
+  });
+});
+
+function doSearch(q) {
+  if (!q.trim()) return [];
+  const lq = q.toLowerCase();
+  return idx.filter(e => e.text.includes(lq)).slice(0, 14);
+}
+
+const inp = document.getElementById('hp-search');
+const box = document.getElementById('hp-results');
+let debounce;
+
+inp.addEventListener('input', () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => render(doSearch(inp.value)), 150);
+});
+inp.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    inp.value = ''; box.innerHTML = ''; box.classList.remove('visible');
+  }
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-outer')) box.classList.remove('visible');
+});
+
+function render(results) {
+  if (!results.length) {
+    box.innerHTML = inp.value ? '<div class="sr-empty">No results found</div>' : '';
+    box.classList.toggle('visible', !!inp.value);
+    return;
+  }
+  const races = results.filter(r => r.type === 'race');
+  const cands = results.filter(r => r.type === 'candidate');
+  let html = '';
+  if (races.length) {
+    html += '<div class="sr-section-head">Races</div>';
+    races.forEach(r => {
+      html += '<a class="sr-item" href="' + r.url + '">'
+        + '<span class="sr-type sr-type-race">Race</span>'
+        + '<div class="sr-body"><div class="sr-title">' + r.label + '</div>'
+        + '<div class="sr-sub">' + r.sub + '</div></div></a>';
+    });
+  }
+  if (cands.length) {
+    html += '<div class="sr-section-head">Candidates</div>';
+    cands.forEach(r => {
+      const bc = r.party === 'Democratic' ? 'badge-D'
+               : r.party === 'Republican' ? 'badge-R' : 'badge-other';
+      html += '<a class="sr-item" href="' + r.url + '">'
+        + '<span class="sr-type sr-type-cand">Candidate</span>'
+        + '<div class="sr-body"><div class="sr-title">' + r.label
+        + ' <span class="party-badge ' + bc + '">' + r.party + '</span></div>'
+        + '<div class="sr-sub">' + r.sub + '</div></div></a>';
+    });
+  }
+  box.innerHTML = html;
+  box.classList.add('visible');
+}
+
+function focusSearch() {
+  inp.focus();
+  inp.scrollIntoView({behavior:'smooth', block:'center'});
+}
+</script>
+</body>
+</html>
+"""
+
+
+def generate_homepage(races: dict, statewide: dict, city_map: dict) -> None:
+    """Generate the root index.html homepage with unified search."""
+    races_json     = json.dumps(races,     separators=(',', ':'))
+    statewide_json = json.dumps(statewide, separators=(',', ':'))
+    city_map_json  = json.dumps(city_map,  separators=(',', ':'))
+
+    html = _HOMEPAGE_TEMPLATE
+    html = html.replace('__SHARED_CSS__',     _SHARED_CSS)
+    html = html.replace('__NAV__',            _nav_html("home"))
+    html = html.replace('__RACES_JSON__',     races_json)
+    html = html.replace('__STATEWIDE_JSON__', statewide_json)
+    html = html.replace('__CITY_MAP_JSON__',  city_map_json)
+
+    out = _ROOT_DIR / "index.html"
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"  \u2713 Homepage \u2192 {out.name}")
+
+
+# ── Race pages ────────────────────────────────────────────────────────────
+
+_RACE_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>__PAGE_TITLE__ &mdash; Colorado 2026</title>
+<style>__SHARED_CSS__</style>
+</head>
+<body>
+__NAV__
+<div class="container">
+  <a class="back-link" href="/">&larr; Back to Search</a>
+  <h1 class="page-title">__PAGE_TITLE__</h1>
+  <p class="page-subtitle">__PAGE_SUBTITLE__</p>
+  __CONTENT__
+</div>
+</body>
+</html>
+"""
+
+
+def _race_page_content(label: str, chamber: str, dist: str,
+                       candidates: list, cities: list) -> str:
+    """Build the inner HTML content block for a race page."""
+    dems = [c for c in candidates if c["party"] == "Democratic"]
+    reps = [c for c in candidates if c["party"] == "Republican"]
+    dr   = sum(c["raised"] for c in dems)
+    rr   = sum(c["raised"] for c in reps)
+    total_raised = sum(c["raised"] for c in candidates)
+    total_coh    = sum(c["coh"]    for c in candidates)
+
+    # Map link
+    if chamber in ("Senate", "House"):
+        map_url = f"/map/?chamber={chamber}&district={dist}"
+        map_btn = f'<a class="action-btn" href="{map_url}">\U0001f5fa\ufe0f View on Map</a>'
+    else:
+        map_btn = '<a class="action-btn secondary" href="/map/">\U0001f5fa\ufe0f Open Map</a>'
+
+    # Summary stats
+    stats = (
+        '<div class="stat-grid">'
+        f'<div class="stat-cell"><div class="lbl">Total Raised</div>'
+        f'<div class="val">{_fmt_dollars(total_raised)}</div></div>'
+        f'<div class="stat-cell"><div class="lbl">Cash on Hand</div>'
+        f'<div class="val">{_fmt_dollars(total_coh)}</div></div>'
+        f'<div class="stat-cell"><div class="lbl">Candidates</div>'
+        f'<div class="val">{len(candidates)}</div></div>'
+        '</div>'
+    )
+
+    # Party fundraising bar
+    party_total = dr + rr
+    d_pct = round(dr / party_total * 100, 1) if party_total > 0 else 50
+    party_bar = (
+        '<div class="party-bar-wrap">'
+        '<div class="party-bar-labels">'
+        f'<span class="dem">Dem {_fmt_dollars(dr)}</span>'
+        f'<span class="rep">Rep {_fmt_dollars(rr)}</span>'
+        '</div>'
+        '<div class="party-bar-track">'
+        f'<div class="party-bar-fill" style="width:{d_pct}%"></div>'
+        '</div></div>'
+    ) if party_total > 0 else ""
+
+    # City pills (legislative districts only)
+    city_section = ""
+    if cities:
+        pills = "".join(f'<span class="city-pill">{c}</span>' for c in sorted(cities))
+        city_section = (
+            '<div class="section-label">Communities in this District</div>'
+            f'<div class="city-pills">{pills}</div>'
+        )
+
+    # Candidate list sorted by raised descending
+    cand_items = ""
+    for c in sorted(candidates, key=lambda x: -x["raised"]):
+        ctx = f"{chamber}-{dist}" if chamber in ("Senate", "House") else chamber
+        slug       = _candidate_slug(c["name"], ctx)
+        badge      = _party_badge(c["party"])
+        inc_html   = '<span class="incumbent-badge">\u2605 Incumbent</span>' if c.get("incumbent") else ""
+        vsl_cls    = "vsl-yes" if c.get("vsl") == "Yes" else "vsl-no"
+        vsl_lbl    = "VSL \u2713" if c.get("vsl") == "Yes" else "VSL \u2717"
+        inactive   = " inactive" if c.get("status") not in (None, "Active") else ""
+        comm       = c.get("committee", "") or ""
+        comm_html  = f'<div class="cand-row-committee">{comm}</div>' if comm else ""
+        cand_items += (
+            f'<a class="cand-row{inactive}" href="/candidates/{slug}/">'
+            f'<div class="cand-row-left">'
+            f'<div class="cand-row-name">{_fmt_name(c["name"])}</div>'
+            f'<div class="cand-row-meta">{badge}{inc_html}'
+            f'<span class="vsl-badge {vsl_cls}">{vsl_lbl}</span></div>'
+            f'{comm_html}'
+            f'</div>'
+            f'<div class="cand-row-right">'
+            f'<div class="cand-row-raised">{_fmt_dollars(c["raised"])}</div>'
+            f'<div class="cand-row-raised-lbl">Raised</div>'
+            f'</div>'
+            f'</a>'
+        )
+
+    cand_section = (
+        '<div class="section-label">Candidates</div>'
+        f'<div class="cand-list">{cand_items}</div>'
+    ) if cand_items else (
+        '<p style="color:#64748b;font-size:14px;margin-top:16px;">'
+        'No candidates on file for 2026.</p>'
+    )
+
+    return (
+        f'<div class="btn-row">{map_btn}</div>'
+        f'{stats}{party_bar}{city_section}{cand_section}'
+    )
+
+
+def generate_race_pages(races: dict, statewide: dict, city_map: dict) -> None:
+    """Generate one HTML page per district and statewide office."""
+    _RACES_DIR.mkdir(parents=True, exist_ok=True)
+    count = 0
+
+    for chamber in ("Senate", "House"):
+        for dist, data in races.get(chamber, {}).items():
+            slug     = f"{chamber.lower()}-{dist}"
+            cities   = city_map.get(chamber, {}).get(dist, [])
+            page_dir = _RACES_DIR / slug
+            page_dir.mkdir(parents=True, exist_ok=True)
+
+            label    = _fmt_label(data["label"])
+            content  = _race_page_content(label, chamber, dist, data["candidates"], cities)
+            subtitle = f"{chamber} District \u00b7 {len(data['candidates'])} candidates"
+            if cities:
+                preview = ", ".join(cities[:3])
+                subtitle += f" \u00b7 {preview}" + (f" +{len(cities)-3} more" if len(cities) > 3 else "")
+
+            html = _RACE_TEMPLATE
+            html = html.replace('__SHARED_CSS__',    _SHARED_CSS)
+            html = html.replace('__NAV__',           _nav_html())
+            html = html.replace('__PAGE_TITLE__',    label)
+            html = html.replace('__PAGE_SUBTITLE__', subtitle)
+            html = html.replace('__CONTENT__',       content)
+
+            with open(page_dir / "index.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            count += 1
+
+    for office, data in statewide.items():
+        slug     = _slugify(office)
+        page_dir = _RACES_DIR / slug
+        page_dir.mkdir(parents=True, exist_ok=True)
+
+        content  = _race_page_content(office, office, office, data["candidates"], [])
+        subtitle = f"Statewide \u00b7 {len(data['candidates'])} candidates"
+
+        html = _RACE_TEMPLATE
+        html = html.replace('__SHARED_CSS__',    _SHARED_CSS)
+        html = html.replace('__NAV__',           _nav_html())
+        html = html.replace('__PAGE_TITLE__',    office)
+        html = html.replace('__PAGE_SUBTITLE__', subtitle)
+        html = html.replace('__CONTENT__',       content)
+
+        with open(page_dir / "index.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        count += 1
+
+    print(f"  \u2713 Race pages \u2192 {_RACES_DIR.name}/  ({count} pages)")
+
+
+# ── Candidate pages ───────────────────────────────────────────────────────
+
+_CANDIDATE_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>__PAGE_TITLE__ &mdash; Colorado 2026</title>
+<style>__SHARED_CSS__</style>
+</head>
+<body>
+__NAV__
+<div class="container">
+  <a class="back-link" href="__RACE_URL__">&larr; Back to __RACE_LABEL__</a>
+  __CONTENT__
+</div>
+</body>
+</html>
+"""
+
+
+def _candidate_page_content(cand: dict, chamber: str, dist_or_office: str,
+                             race_label: str, race_url: str) -> str:
+    name      = _fmt_name(cand["name"])
+    badge     = _party_badge(cand["party"])
+    inc_html  = '<span class="incumbent-badge">\u2605 Incumbent</span>' if cand.get("incumbent") else ""
+    status    = cand.get("status", "Active") or "Active"
+    vsl       = cand.get("vsl", "")
+    committee = cand.get("committee", "") or ""
+    raised    = cand.get("raised", 0.0)
+    spent     = cand.get("spent",  0.0)
+    coh       = cand.get("coh",    0.0)
+    loans     = cand.get("loans",  0.0)
+    burn      = _burn_rate(spent, raised)
+    loan_pct  = f"{loans / (raised + loans) * 100:.0f}%" if (raised + loans) > 0 else "0%"
+    vsl_cls   = "vsl-yes" if vsl == "Yes" else "vsl-no"
+    vsl_text  = "Accepted VSL" if vsl == "Yes" else ("Declined VSL" if vsl == "No" else "VSL Unknown")
+
+    # TRACER search link via committee name
+    tracer_q   = (committee or cand["name"]).replace(" ", "+")
+    tracer_url = f"https://tracer.sos.colorado.gov/PublicSite/SearchPages/CommitteeSearch.aspx?name={tracer_q}"
+
+    header = (
+        f'<h1 class="page-title">{name}</h1>'
+        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">'
+        f'{badge}{inc_html}'
+        f'<span class="vsl-badge {vsl_cls}">{vsl_text}</span>'
+        f'</div>'
+    )
+    if committee:
+        header += f'<p style="font-size:13px;color:#64748b;margin-bottom:4px;">{committee}</p>'
+    if status not in (None, "Active"):
+        header += f'<p style="font-size:12px;color:#dc2626;font-weight:600;margin-bottom:16px;">Status: {status}</p>'
+    else:
+        header += '<div style="margin-bottom:16px;"></div>'
+
+    fmt_race_label = _fmt_label(race_label)
+    details = (
+        '<div class="detail-row">'
+        f'<div class="detail-item"><div class="dl">Running For</div>'
+        f'<div class="dv"><a href="{race_url}">{fmt_race_label}</a></div></div>'
+        f'<div class="detail-item"><div class="dl">Filing Status</div>'
+        f'<div class="dv">{status}</div></div>'
+        '</div>'
+    )
+
+    stats = (
+        '<div class="section-label">Fundraising</div>'
+        '<div class="stat-grid">'
+        f'<div class="stat-cell"><div class="lbl">Raised</div>'
+        f'<div class="val">{_fmt_dollars(raised)}</div></div>'
+        f'<div class="stat-cell"><div class="lbl">Spent</div>'
+        f'<div class="val">{_fmt_dollars(spent)}</div></div>'
+        f'<div class="stat-cell"><div class="lbl">Cash on Hand</div>'
+        f'<div class="val">{_fmt_dollars(coh)}</div></div>'
+        f'<div class="stat-cell"><div class="lbl">Loans</div>'
+        f'<div class="val">{_fmt_dollars(loans)}</div></div>'
+        f'<div class="stat-cell"><div class="lbl">Burn Rate</div>'
+        f'<div class="val">{burn}</div></div>'
+        f'<div class="stat-cell"><div class="lbl">Loan Reliance</div>'
+        f'<div class="val">{loan_pct}</div></div>'
+        '</div>'
+    )
+
+    buttons = (
+        '<div class="btn-row">'
+        f'<a class="action-btn secondary" href="{tracer_url}" target="_blank" rel="noopener">'
+        '\u2197 View on TRACER</a>'
+        '</div>'
+    )
+
+    placeholder = (
+        '<div class="section-label">Additional Information</div>'
+        '<div class="coming-soon-box">'
+        '<div class="cs-icon">\U0001f517</div>'
+        '<p style="font-weight:600;color:#475569;">Web links &amp; contact info</p>'
+        '<p>Phone, website, and social media links will appear here when available.</p>'
+        '</div>'
+    )
+
+    return header + details + stats + buttons + placeholder
+
+
+def generate_candidate_pages(races: dict, statewide: dict) -> None:
+    """Generate one HTML page per candidate."""
+    _CANDIDATES_DIR.mkdir(parents=True, exist_ok=True)
+    count = 0
+
+    for chamber in ("Senate", "House"):
+        for dist, data in races.get(chamber, {}).items():
+            race_slug = f"{chamber.lower()}-{dist}"
+            race_url  = f"/races/{race_slug}/"
+            for cand in data["candidates"]:
+                slug     = _candidate_slug(cand["name"], f"{chamber}-{dist}")
+                page_dir = _CANDIDATES_DIR / slug
+                page_dir.mkdir(parents=True, exist_ok=True)
+
+                content = _candidate_page_content(
+                    cand, chamber, dist, data["label"], race_url
+                )
+                html = _CANDIDATE_TEMPLATE
+                html = html.replace('__SHARED_CSS__',  _SHARED_CSS)
+                html = html.replace('__NAV__',         _nav_html())
+                html = html.replace('__PAGE_TITLE__',  _fmt_name(cand["name"]))
+                html = html.replace('__RACE_URL__',    race_url)
+                html = html.replace('__RACE_LABEL__',  _fmt_label(data["label"]))
+                html = html.replace('__CONTENT__',     content)
+
+                with open(page_dir / "index.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+                count += 1
+
+    for office, data in statewide.items():
+        office_slug = _slugify(office)
+        race_url    = f"/races/{office_slug}/"
+        for cand in data["candidates"]:
+            slug     = _candidate_slug(cand["name"], office)
+            page_dir = _CANDIDATES_DIR / slug
+            page_dir.mkdir(parents=True, exist_ok=True)
+
+            content = _candidate_page_content(
+                cand, office, office, office, race_url
+            )
+            html = _CANDIDATE_TEMPLATE
+            html = html.replace('__SHARED_CSS__',  _SHARED_CSS)
+            html = html.replace('__NAV__',         _nav_html())
+            html = html.replace('__PAGE_TITLE__',  _fmt_name(cand["name"]))
+            html = html.replace('__RACE_URL__',    race_url)
+            html = html.replace('__RACE_LABEL__',  office)
+            html = html.replace('__CONTENT__',     content)
+
+            with open(page_dir / "index.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            count += 1
+
+    print(f"  \u2713 Candidate pages \u2192 {_CANDIDATES_DIR.name}/  ({count} pages)")
 
 
 def generate_html(races: dict, statewide: dict, geojson_senate: dict,
@@ -1475,9 +2281,16 @@ def main():
         f.write(html)
 
     size_kb = OUTPUT_HTML.stat().st_size // 1024
-    print(f"✓ Done — {OUTPUT_HTML} ({size_kb} KB)")
-    print(f"\nOpen in browser:  open map/index.html")
-    print(f"Or serve locally: python3 -m http.server 8000 --directory map/")
+    print(f"  \u2713 Map \u2192 {OUTPUT_HTML} ({size_kb} KB)")
+
+    print("\nGenerating homepage and static pages...")
+    generate_homepage(races, statewide, city_map)
+    generate_race_pages(races, statewide, city_map)
+    generate_candidate_pages(races, statewide)
+
+    print(f"\n\u2713 Done")
+    print(f"\nOpen in browser:  open index.html")
+    print(f"Or serve locally: python3 -m http.server 8000")
 
 
 if __name__ == "__main__":
