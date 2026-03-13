@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Colorado 2026 Legislative Fundraising{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+{% block head %}{% endblock %}
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand">Colorado 2026 Legislative Fundraising</a>
+  <div class="nav-links">
+    <a href="/"{% if active == 'home' %} class="active"{% endif %}>Home</a>
+    <a href="/map/"{% if active == 'map' %} class="active"{% endif %}>Map</a>
+  </div>
+</nav>
+{% block content %}{% endblock %}
+</body>
+</html>

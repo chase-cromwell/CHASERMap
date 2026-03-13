@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+
+{% block title %}Colorado 2026 Legislative Fundraising{% endblock %}
+
+{% block head %}
+<style>
+.hero {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  padding: 56px 20px 48px; text-align: center; color: #f1f5f9;
+}
+.hero h1 {
+  font-size: 28px; font-weight: 800; color: #fff;
+  margin-bottom: 8px; letter-spacing: -.02em;
+}
+.hero p { font-size: 15px; color: #94a3b8; margin-bottom: 32px; }
+.search-outer { position: relative; max-width: 540px; margin: 0 auto; }
+.search-bar {
+  width: 100%; padding: 14px 20px; font-size: 15px;
+  border: 2px solid #334155; background: #1e293b; color: #f1f5f9;
+  border-radius: 12px; outline: none; transition: border-color .2s;
+}
+.search-bar::placeholder { color: #475569; }
+.search-bar:focus { border-color: #3b82f6; }
+.search-hint { margin-top: 10px; font-size: 12px; color: #475569; }
+#hp-results {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  width: 100%; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  z-index: 200; overflow: hidden; max-height: 420px; overflow-y: auto; text-align: left;
+}
+#hp-results.visible { display: block; }
+.sr-section-head {
+  padding: 8px 14px 4px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em; color: #94a3b8;
+  border-top: 1px solid #f1f5f9;
+}
+.sr-section-head:first-child { border-top: none; }
+.sr-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  cursor: pointer; border-bottom: 1px solid #f8fafc;
+  text-decoration: none; color: inherit;
+}
+.sr-item:last-child { border-bottom: none; }
+.sr-item:hover { background: #f8fafc; }
+.sr-type {
+  font-size: 10px; font-weight: 700; padding: 2px 7px;
+  border-radius: 4px; flex-shrink: 0;
+}
+.sr-type-race { background: #334155; color: #e2e8f0; }
+.sr-type-cand { background: #dbeafe; color: #1e40af; }
+.sr-body { flex: 1; min-width: 0; }
+.sr-title { font-size: 13px; font-weight: 600; color: #0f172a; }
+.sr-sub {
+  font-size: 11px; color: #64748b; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sr-empty { padding: 16px; text-align: center; color: #94a3b8; font-size: 13px; }
+.cards-section {
+  max-width: 900px; margin: 40px auto; padding: 0 20px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;
+}
+.feature-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+  padding: 24px 20px; transition: all .2s;
+  text-decoration: none; color: inherit; display: flex; flex-direction: column;
+  cursor: pointer;
+}
+.feature-card:hover {
+  border-color: #93c5fd; box-shadow: 0 4px 20px rgba(37,99,235,.1); text-decoration: none;
+}
+.feature-card.disabled { cursor: default; opacity: .65; }
+.feature-card.disabled:hover { border-color: #e2e8f0; box-shadow: none; }
+.card-icon { font-size: 28px; margin-bottom: 12px; }
+.card-title { font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+.card-desc { font-size: 13px; color: #64748b; line-height: 1.5; flex: 1; }
+.card-badge {
+  display: inline-block; margin-top: 12px; font-size: 11px; font-weight: 600;
+  padding: 3px 10px; border-radius: 20px; background: #f1f5f9; color: #64748b;
+}
+.card-cta { margin-top: 16px; font-size: 13px; color: #3b82f6; font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Colorado 2026 Campaign Finance</h1>
+  <p>Explore fundraising data for all legislative and statewide races.</p>
+  <div class="search-outer">
+    <input id="hp-search" class="search-bar" type="text"
+           placeholder="Search races, candidates, cities&#8230;" autocomplete="off">
+    <div id="hp-results"></div>
+  </div>
+  <p class="search-hint">Try &ldquo;House District 44&rdquo;, &ldquo;Denver&rdquo;, or a candidate name</p>
+</div>
+<div class="cards-section">
+  <div class="feature-card" onclick="focusSearch()">
+    <div class="card-icon">&#128499;&#65039;</div>
+    <div class="card-title">Find a Race</div>
+    <div class="card-desc">Browse all House and Senate districts and statewide offices. See every candidate and their fundraising totals.</div>
+    <div class="card-cta">Search above &#8593;</div>
+  </div>
+  <div class="feature-card" onclick="focusSearch()">
+    <div class="card-icon">&#128100;</div>
+    <div class="card-title">Find a Candidate</div>
+    <div class="card-desc">Look up any candidate by name or committee to see their full financial breakdown.</div>
+    <div class="card-cta">Search above &#8593;</div>
+  </div>
+  <div class="feature-card disabled">
+    <div class="card-icon">&#128176;</div>
+    <div class="card-title">Find a Donor</div>
+    <div class="card-desc">Search contributions by donor name to see all donations made across Colorado campaigns.</div>
+    <span class="card-badge">Coming Soon</span>
+  </div>
+  <a class="feature-card" href="/map/">
+    <div class="card-icon">&#128506;&#65039;</div>
+    <div class="card-title">Browse the Map</div>
+    <div class="card-desc">Explore campaign finance data geographically &mdash; click any district to see all candidates.</div>
+    <div class="card-cta">Open Map &rarr;</div>
+  </a>
+</div>
+
+<script>
+const RACES    = {{ races_json | safe }};
+const STATEWIDE = {{ statewide_json | safe }};
+const CITY_MAP = {{ city_map_json | safe }};
+
+function slugify(t) {
+  return t.toLowerCase().trim()
+    .replace(/[^\w\s-]/g,'').replace(/[\s_]+/g,'-')
+    .replace(/-+/g,'-').replace(/^-|-$/g,'');
+}
+function fmtName(s) {
+  const p = s.trim().split(',');
+  const last = p[0].trim().replace(/\b\w/g, c => c.toUpperCase());
+  if (p.length > 1) {
+    const first = p[1].trim().split(/\s+/)[0].replace(/\b\w/g, c => c.toUpperCase());
+    return first + ' ' + last;
+  }
+  return last;
+}
+function candSlug(name, ctx) {
+  const p = name.trim().split(',');
+  const last = slugify(p[0]);
+  const first = p.length > 1 ? slugify(p[1].trim().split(/\s+/)[0]) : '';
+  const suf = slugify(ctx);
+  return first ? first + '-' + last + '-' + suf : last + '-' + suf;
+}
+
+const idx = [];
+['Senate','House'].forEach(ch => {
+  Object.entries(RACES[ch] || {}).forEach(([dist, data]) => {
+    const cities = CITY_MAP[ch]?.[dist] || [];
+    const names  = data.candidates.map(c => c.name);
+    const comms  = data.candidates.map(c => c.committee).filter(Boolean);
+    idx.push({
+      type:'race', label:data.label,
+      url: '/races/' + ch.toLowerCase() + '-' + dist + '/',
+      sub: cities.slice(0,3).join(', ') || (data.candidates.length + ' candidates'),
+      text: [data.label, ...cities, ...names, ...comms].join(' ').toLowerCase(),
+    });
+    data.candidates.forEach(c => {
+      idx.push({
+        type:'candidate', label:fmtName(c.name), party:c.party,
+        url: '/candidates/' + candSlug(c.name, ch + '-' + dist) + '/',
+        sub: c.party + ' \u00b7 ' + data.label,
+        text: [c.name, c.committee||'', data.label, ...cities].join(' ').toLowerCase(),
+      });
+    });
+  });
+});
+Object.entries(STATEWIDE).forEach(([office, data]) => {
+  idx.push({
+    type:'race', label:office,
+    url: '/races/' + slugify(office) + '/',
+    sub: data.candidates.length + ' candidates \u00b7 Statewide',
+    text: [office, ...data.candidates.map(c => c.name)].join(' ').toLowerCase(),
+  });
+  data.candidates.forEach(c => {
+    idx.push({
+      type:'candidate', label:fmtName(c.name), party:c.party,
+      url: '/candidates/' + candSlug(c.name, office) + '/',
+      sub: c.party + ' \u00b7 ' + office,
+      text: [c.name, c.committee||'', office].join(' ').toLowerCase(),
+    });
+  });
+});
+
+function doSearch(q) {
+  if (!q.trim()) return [];
+  const lq = q.toLowerCase();
+  return idx.filter(e => e.text.includes(lq)).slice(0, 14);
+}
+
+const inp = document.getElementById('hp-search');
+const box = document.getElementById('hp-results');
+let debounce;
+
+inp.addEventListener('input', () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => render(doSearch(inp.value)), 150);
+});
+inp.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    inp.value = ''; box.innerHTML = ''; box.classList.remove('visible');
+  }
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-outer')) box.classList.remove('visible');
+});
+
+function render(results) {
+  if (!results.length) {
+    box.innerHTML = inp.value ? '<div class="sr-empty">No results found</div>' : '';
+    box.classList.toggle('visible', !!inp.value);
+    return;
+  }
+  const races = results.filter(r => r.type === 'race');
+  const cands = results.filter(r => r.type === 'candidate');
+  let html = '';
+  if (races.length) {
+    html += '<div class="sr-section-head">Races</div>';
+    races.forEach(r => {
+      html += '<a class="sr-item" href="' + r.url + '">'
+        + '<span class="sr-type sr-type-race">Race</span>'
+        + '<div class="sr-body"><div class="sr-title">' + r.label + '</div>'
+        + '<div class="sr-sub">' + r.sub + '</div></div></a>';
+    });
+  }
+  if (cands.length) {
+    html += '<div class="sr-section-head">Candidates</div>';
+    cands.forEach(r => {
+      const bc = r.party === 'Democratic' ? 'badge-D'
+               : r.party === 'Republican' ? 'badge-R' : 'badge-other';
+      html += '<a class="sr-item" href="' + r.url + '">'
+        + '<span class="sr-type sr-type-cand">Candidate</span>'
+        + '<div class="sr-body"><div class="sr-title">' + r.label
+        + ' <span class="party-badge ' + bc + '">' + r.party + '</span></div>'
+        + '<div class="sr-sub">' + r.sub + '</div></div></a>';
+    });
+  }
+  box.innerHTML = html;
+  box.classList.add('visible');
+}
+
+function focusSearch() {
+  inp.focus();
+  inp.scrollIntoView({behavior:'smooth', block:'center'});
+}
+</script>
+{% endblock %}

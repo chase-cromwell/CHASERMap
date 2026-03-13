@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}{{ label }} &mdash; Colorado 2026{% endblock %}
+
+{% block content %}
+<div class="container">
+  <a class="back-link" href="/">&larr; Back to Search</a>
+  <h1 class="page-title">{{ label }}</h1>
+  <p class="page-subtitle">{{ subtitle }}</p>
+
+  {# Map button #}
+  <div class="btn-row">
+    {% if is_legislative %}
+      <a class="action-btn" href="/map/?chamber={{ chamber }}&district={{ district }}">&#128506;&#65039; View on Map</a>
+    {% else %}
+      <a class="action-btn secondary" href="/map/">&#128506;&#65039; Open Map</a>
+    {% endif %}
+  </div>
+
+  {# Summary stats #}
+  {% set total_raised = candidates | sum(attribute='raised') %}
+  {% set total_coh    = candidates | sum(attribute='coh') %}
+  <div class="stat-grid">
+    <div class="stat-cell">
+      <div class="lbl">Total Raised</div>
+      <div class="val">{{ total_raised | fmt_dollars }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Cash on Hand</div>
+      <div class="val">{{ total_coh | fmt_dollars }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Candidates</div>
+      <div class="val">{{ candidates | length }}</div>
+    </div>
+  </div>
+
+  {# Party fundraising bar #}
+  {% set dem_raised = candidates | selectattr('party', 'equalto', 'Democratic') | sum(attribute='raised') %}
+  {% set rep_raised = candidates | selectattr('party', 'equalto', 'Republican') | sum(attribute='raised') %}
+  {% set party_total = dem_raised + rep_raised %}
+  {% if party_total > 0 %}
+    {% set d_pct = (dem_raised / party_total * 100) | round(1) %}
+    <div class="party-bar-wrap">
+      <div class="party-bar-labels">
+        <span class="dem">Dem {{ dem_raised | fmt_dollars }}</span>
+        <span class="rep">Rep {{ rep_raised | fmt_dollars }}</span>
+      </div>
+      <div class="party-bar-track">
+        <div class="party-bar-fill" style="width:{{ d_pct }}%"></div>
+      </div>
+    </div>
+  {% endif %}
+
+  {# City pills (legislative only) #}
+  {% if cities %}
+    <div class="section-label">Communities in this District</div>
+    <div class="city-pills">
+      {% for city in cities | sort %}
+        <span class="city-pill">{{ city }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {# Candidate list #}
+  <div class="section-label">Candidates</div>
+  {% if candidates %}
+    <div class="cand-list">
+      {% for c in candidates %}
+        {% set inactive = c.status not in ('Active', None, '') %}
+        <a class="cand-row{% if inactive %} inactive{% endif %}" href="/candidates/{{ c.slug }}/">
+          <div class="cand-row-left">
+            <div class="cand-row-name">{{ c.name | fmt_name }}</div>
+            <div class="cand-row-meta">
+              {# Party badge #}
+              {% if c.party == 'Democratic' %}
+                <span class="party-badge badge-D">{{ c.party }}</span>
+              {% elif c.party == 'Republican' %}
+                <span class="party-badge badge-R">{{ c.party }}</span>
+              {% else %}
+                <span class="party-badge badge-other">{{ c.party }}</span>
+              {% endif %}
+              {# Incumbent badge #}
+              {% if c.incumbent %}
+                <span class="incumbent-badge">&#9733; Incumbent</span>
+              {% endif %}
+              {# VSL badge #}
+              {% if c.vsl == 'Yes' %}
+                <span class="vsl-badge vsl-yes">VSL &#10003;</span>
+              {% else %}
+                <span class="vsl-badge vsl-no">VSL &#10007;</span>
+              {% endif %}
+            </div>
+            {% if c.committee %}
+              <div class="cand-row-committee">{{ c.committee }}</div>
+            {% endif %}
+          </div>
+          <div class="cand-row-right">
+            <div class="cand-row-raised">{{ c.raised | fmt_dollars }}</div>
+            <div class="cand-row-raised-lbl">Raised</div>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p style="color:#64748b;font-size:14px;margin-top:16px;">No candidates on file for 2026.</p>
+  {% endif %}
+</div>
+{% endblock %}
