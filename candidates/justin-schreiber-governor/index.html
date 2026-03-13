@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Justin Schreiber &mdash; Colorado 2026</title>
+<style>*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  min-height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f8fafc; color: #0f172a;
+}
+a { color: #2563eb; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.site-nav {
+  display: flex; align-items: center; gap: 16px; padding: 0 20px;
+  background: #1e293b; color: #f1f5f9; height: 50px;
+  position: sticky; top: 0; z-index: 100;
+}
+.nav-brand { font-size: 14px; font-weight: 700; color: #e2e8f0; text-decoration: none; }
+.nav-links { display: flex; gap: 16px; margin-left: auto; }
+.nav-links a { font-size: 13px; color: #94a3b8; text-decoration: none; }
+.nav-links a:hover { color: #e2e8f0; }
+.nav-links a.active { color: #fff; font-weight: 600; }
+.container { max-width: 900px; margin: 0 auto; padding: 32px 20px; }
+.page-title { font-size: 22px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+.page-subtitle { font-size: 14px; color: #64748b; margin-bottom: 24px; }
+.section-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: #64748b; margin: 24px 0 10px;
+}
+.party-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
+  text-transform: uppercase; letter-spacing: .04em; display: inline-block;
+}
+.badge-D     { background: #dbeafe; color: #1e40af; }
+.badge-R     { background: #fee2e2; color: #991b1b; }
+.badge-other { background: #f3f4f6; color: #4b5563; }
+.incumbent-badge {
+  font-size: 10px; font-weight: 700; background: #ede9fe; color: #6d28d9;
+  border-radius: 10px; padding: 2px 8px; display: inline-block;
+}
+.vsl-badge {
+  font-size: 10px; font-weight: 700; border-radius: 10px;
+  padding: 2px 8px; display: inline-block;
+}
+.vsl-yes { background: #dcfce7; color: #15803d; }
+.vsl-no  { background: #fee2e2; color: #991b1b; }
+.stat-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0;
+}
+.stat-cell {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px;
+}
+.stat-cell .lbl {
+  font-size: 10px; color: #64748b; text-transform: uppercase;
+  letter-spacing: .05em; margin-bottom: 4px;
+}
+.stat-cell .val { font-size: 17px; font-weight: 700; color: #0f172a; }
+.party-bar-wrap { margin: 16px 0; }
+.party-bar-labels { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+.party-bar-labels .dem { color: #1a56db; font-weight: 700; }
+.party-bar-labels .rep { color: #e02424; font-weight: 700; }
+.party-bar-track {
+  height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; position: relative;
+}
+.party-bar-fill {
+  position: absolute; left: 0; top: 0; height: 100%;
+  background: linear-gradient(to right, #1a56db, #93c5fd); border-radius: 5px;
+}
+.cand-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.cand-row {
+  display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px;
+  text-decoration: none; color: inherit; transition: border-color .15s, box-shadow .15s;
+}
+.cand-row:hover {
+  border-color: #93c5fd; box-shadow: 0 2px 8px rgba(37,99,235,.08); text-decoration: none;
+}
+.cand-row.inactive { opacity: .65; }
+.cand-row-left { flex: 1; min-width: 0; }
+.cand-row-name { font-size: 14px; font-weight: 600; color: #0f172a; margin-bottom: 4px; }
+.cand-row-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cand-row-committee { font-size: 11px; color: #94a3b8; margin-top: 3px; }
+.cand-row-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.cand-row-raised { font-size: 15px; font-weight: 700; color: #0f172a; }
+.cand-row-raised-lbl { font-size: 10px; color: #94a3b8; text-transform: uppercase; }
+.back-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: #64748b; margin-bottom: 20px;
+}
+.back-link:hover { color: #0f172a; text-decoration: none; }
+.city-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.city-pill {
+  font-size: 12px; background: #f1f5f9; border: 1px solid #e2e8f0;
+  border-radius: 20px; padding: 3px 10px; color: #475569;
+}
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0; }
+.action-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #1e293b; color: #f1f5f9;
+  padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  text-decoration: none; transition: background .15s;
+}
+.action-btn:hover { background: #334155; text-decoration: none; color: #f1f5f9; }
+.action-btn.secondary {
+  background: #fff; color: #374151; border: 1px solid #d1d5db;
+}
+.action-btn.secondary:hover { background: #f9fafb; color: #374151; }
+.detail-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;
+}
+.detail-item .dl {
+  font-size: 11px; color: #64748b; text-transform: uppercase;
+  letter-spacing: .05em; margin-bottom: 3px;
+}
+.detail-item .dv { font-size: 14px; color: #0f172a; font-weight: 500; }
+.coming-soon-box {
+  text-align: center; padding: 40px 20px; background: #fff;
+  border: 2px dashed #e2e8f0; border-radius: 12px; color: #94a3b8;
+}
+.coming-soon-box .cs-icon { font-size: 36px; margin-bottom: 12px; }
+.coming-soon-box p { font-size: 14px; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<nav class="site-nav"><a href="/" class="nav-brand">Colorado 2026 Legislative Fundraising</a><div class="nav-links"><a href="/" class="active">Home</a><a href="/map/">Map</a></div></nav>
+<div class="container">
+  <a class="back-link" href="/races/governor/">&larr; Back to Governor</a>
+  <h1 class="page-title">Justin Schreiber</h1><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;"><span class="party-badge badge-R">Republican</span><span class="vsl-badge vsl-no">Declined VSL</span></div><p style="font-size:13px;color:#64748b;margin-bottom:4px;">SCHREIBER FOR GOVERNOR 2026</p><p style="font-size:12px;color:#dc2626;font-weight:600;margin-bottom:16px;">Status: Terminated</p><div class="detail-row"><div class="detail-item"><div class="dl">Running For</div><div class="dv"><a href="/races/governor/">Governor</a></div></div><div class="detail-item"><div class="dl">Filing Status</div><div class="dv">Terminated</div></div></div><div class="section-label">Fundraising</div><div class="stat-grid"><div class="stat-cell"><div class="lbl">Raised</div><div class="val">$0</div></div><div class="stat-cell"><div class="lbl">Spent</div><div class="val">$0</div></div><div class="stat-cell"><div class="lbl">Cash on Hand</div><div class="val">$0</div></div><div class="stat-cell"><div class="lbl">Loans</div><div class="val">$0</div></div><div class="stat-cell"><div class="lbl">Burn Rate</div><div class="val">—</div></div><div class="stat-cell"><div class="lbl">Loan Reliance</div><div class="val">0%</div></div></div><div class="btn-row"><a class="action-btn secondary" href="https://tracer.sos.colorado.gov/PublicSite/SearchPages/CommitteeSearch.aspx?name=SCHREIBER+FOR+GOVERNOR+2026" target="_blank" rel="noopener">↗ View on TRACER</a></div><div class="section-label">Additional Information</div><div class="coming-soon-box"><div class="cs-icon">🔗</div><p style="font-weight:600;color:#475569;">Web links &amp; contact info</p><p>Phone, website, and social media links will appear here when available.</p></div>
+</div>
+</body>
+</html>

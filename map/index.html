@@ -1024,6 +1024,17 @@ document.getElementById('vsl-toggle').addEventListener('change', e => {
 });
 
 // ── Init ──────────────────────────────────────────────
+// URL param deep-link: /map/?chamber=House&district=44
+(function() {
+  const p = new URLSearchParams(location.search);
+  const ch = p.get('chamber'), dist = p.get('district');
+  if (ch && ['Senate','House'].includes(ch)) {
+    activeChamber = ch;
+    document.querySelectorAll('.chamber-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.chamber === ch));
+  }
+  if (dist) setTimeout(() => openSidebar(activeChamber, dist), 100);
+})();
 updateLegend();
 buildLayer(activeChamber);
 </script>
