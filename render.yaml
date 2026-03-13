@@ -1,0 +1,45 @@
+# render.yaml — Render.com deployment configuration for CHASERMap
+#
+# This file is automatically detected by Render when you connect a
+# GitHub repository as a Web Service.  All settings here override the
+# defaults shown in the Render dashboard UI.
+#
+# Deploy steps:
+#   1. Push this repo to GitHub (with data/chaser.db committed)
+#   2. Go to render.com → New → Web Service
+#   3. Connect your repo — Render will read this file automatically
+#   4. Click Deploy
+#
+# See WIKI.md § 10 for full deployment walkthrough.
+
+services:
+  - type: web
+    name: chaser-map
+
+    # Free tier — spins down after ~15 min of inactivity.
+    # Upgrade to "starter" ($7/mo) to keep it always awake.
+    plan: free
+
+    # Python runtime
+    runtime: python
+
+    # Build command: install all Python dependencies from requirements.txt.
+    # Render runs this in a fresh environment on every deploy.
+    buildCommand: pip install -r requirements.txt
+
+    # Start command: run Gunicorn as the WSGI server.
+    #   app:app     — Python module "app", Flask object named "app"
+    #   --workers 2 — 2 worker processes (safe for 512 MB free tier RAM)
+    #   --bind 0.0.0.0:$PORT — Render injects $PORT; binding 0.0.0.0 is required
+    #   --timeout 120 — allow up to 2 minutes for slow cold-start requests
+    startCommand: gunicorn app:app --workers 2 --bind 0.0.0.0:$PORT --timeout 120
+
+    # Environment variables available to the running app.
+    # Add secrets (API keys, etc.) in the Render dashboard instead of here.
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
+    # Health check: Render pings this path after deploy to confirm the app
+    # is responding before marking the deploy as successful.
+    healthCheckPath: /

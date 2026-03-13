@@ -1,9 +1,30 @@
 #!/usr/bin/env python3
 """
-TRACERMap Finance Builder
-Reads data/finances/*.csv and generates map/finance.html — a self-contained
-finance explorer with donor lookup, candidate fundraising timelines, and
-expenditure line items.
+finance_builder.py — Generate the self-contained Finance Explorer HTML page.
+
+This script reads three Colorado campaign finance CSVs (contributions,
+expenditures, loans) and produces map/finance.html — a single-file
+interactive dashboard that requires no server-side calls once loaded.
+
+The generated page has three tabs:
+  1. Donor Lookup   — search all contributions by donor name, filter by
+                      contributor type (Individual, Business, PAC, LLC, Other)
+  2. Fundraising    — per-candidate quarterly bar/line charts (Chart.js)
+  3. Expenditures   — itemized spending list for any tracked candidate
+
+Data sources (all under data/finances/):
+    2026_ContributionData.csv   — all contributions to all CO committees
+    2026_ExpenditureData.csv    — all expenditures
+    2026_LoanData.csv           — loans (original + repayments)
+
+Only "tracked" candidates — those with a committee that appears in either
+tracer_2026_all_districts.csv or tracer_2026_statewide.csv — appear in the
+timeline/expenditure views.  The donor lookup includes ALL contributions
+across the entire Colorado campaign finance system for the current cycle.
+
+Amendment handling:
+    Rows with Amended=Y have been superseded and are skipped.
+    Rows with Amendment=Y are the current valid version and are kept.
 
 Usage:
     python3 finance_builder.py
@@ -33,7 +54,7 @@ LOANS_CSV          = FINANCE_DIR / "2026_LoanData.csv"
 # Fiscal quarter config
 # Each entry: (label, (start_month, start_day), (end_month, end_day))
 # These are standard calendar quarters. Edit ranges here if Colorado's
-# reporting periods differ.
+# reporting periods differ from the calendar year.
 # ---------------------------------------------------------------------------
 FISCAL_QUARTERS = [
     ("Q1", (1,  1), (3,  31)),
@@ -44,10 +65,27 @@ FISCAL_QUARTERS = [
 
 # ---------------------------------------------------------------------------
 # Contributor type classification
-# Returns a single-char group code used by the JS filter.
-# Groups: I=Individual, L=LLC Member, C=Committee/PAC, B=Business, O=Other
 # ---------------------------------------------------------------------------
+
 def classify_type(ctype: str) -> str:
+    """Map a TRACER ContributorType string to a single-character group code.
+
+    These codes are used by the JavaScript donor-lookup filter to quickly
+    toggle visibility by contributor category without re-parsing strings.
+
+    Groups:
+        "I" — Individual person
+        "L" — Individual (Member of LLC) — a natural person donating via LLC
+        "B" — Business entity (Corporation, Partnership, etc.)
+        "C" — Committee / PAC / party organization / labor union
+        "O" — Other / unrecognized type
+
+    Args:
+        ctype: The raw ContributorType string from the TRACER CSV.
+
+    Returns:
+        Single-character group code.
+    """
     t = ctype.strip()
     if t == "Individual":
         return "I"
@@ -66,7 +104,18 @@ def classify_type(ctype: str) -> str:
 
 
 def assign_quarter(dt: datetime) -> str:
-    """Return 'YYYY-Q#' label for a date based on FISCAL_QUARTERS config."""
+    """Return the fiscal quarter label for a given date.
+
+    Matches the date's (month, day) against each FISCAL_QUARTERS range.
+
+    Args:
+        dt: A datetime object.
+
+    Returns:
+        Quarter string in "YYYY-Q#" format, e.g. "2026-Q1".
+        Returns "YYYY-Q?" if the date doesn't match any configured range
+        (should not happen with standard calendar quarters).
+    """
     md = (dt.month, dt.day)
     for label, start, end in FISCAL_QUARTERS:
         if start <= md <= end:
@@ -75,6 +124,11 @@ def assign_quarter(dt: datetime) -> str:
 
 
 def parse_date(s: str) -> datetime | None:
+    """Parse a date string to a datetime, returning None on failure.
+
+    Accepts ISO 8601 format "YYYY-MM-DD".  Truncates to the first 10
+    characters to handle strings with a time component.
+    """
     s = s.strip()[:10]
     try:
         return datetime.strptime(s, "%Y-%m-%d")
@@ -83,6 +137,11 @@ def parse_date(s: str) -> datetime | None:
 
 
 def parse_amount(s: str) -> float:
+    """Parse a dollar amount string to a float, returning 0.0 on failure.
+
+    Handles empty strings, None, and non-numeric values gracefully.
+    TRACER amounts do not include currency symbols or commas.
+    """
     try:
         return float(s.strip())
     except (ValueError, AttributeError):
@@ -91,23 +150,47 @@ def parse_amount(s: str) -> float:
 
 # ---------------------------------------------------------------------------
 # Load tracked committees
-# Returns: dict[co_id -> {committee_name, candidate_name, chamber, district,
-#                          party, jurisdiction}]
 # ---------------------------------------------------------------------------
+
 def load_tracked_committees() -> dict:
+    """Build a lookup of committee names for all tracked candidates.
+
+    "Tracked" means the candidate appears in either the legislative or the
+    statewide TRACER CSV.  Only tracked candidates get timeline and
+    expenditure detail in the Finance Explorer.
+
+    The returned dict is keyed by UPPER-CASE committee name so it can be
+    matched case-insensitively against the CommitteeName column in the
+    contribution/expenditure CSVs.
+
+    Returns:
+        {
+          "FRIENDS OF JANE DOE": {
+            "committee_name": "Friends of Jane Doe",   # original casing
+            "candidate_name": "DOE, JANE A",
+            "chamber":        "House",                 # or "Statewide"
+            "district":       "44",
+            "district_label": "House District 44",
+            "party":          "Democratic",
+          },
+          ...
+        }
+    """
     committees = {}
 
     def ingest(filepath, chamber_override=None):
+        """Read one TRACER CSV and add its committees to the dict."""
         with open(filepath, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 cn = row["CommitteeName"].strip()
                 if not cn or cn == "None":
-                    continue
+                    continue  # skip rows without a committee name
                 cand = row["CandName"].strip()
                 chamber = chamber_override or row.get("Chamber", "").strip()
                 district = row.get("DistrictNumber", "").strip()
                 label = row.get("DistrictLabel", "").strip()
                 party = row.get("Party", "").strip()
+                # Upper-case key for case-insensitive matching later
                 committees[cn.upper()] = {
                     "committee_name": cn,
                     "candidate_name": cand,
@@ -124,32 +207,66 @@ def load_tracked_committees() -> dict:
 
 # ---------------------------------------------------------------------------
 # Load contributions
-# Returns:
-#   contributions_list  — list of compact arrays (for donor lookup, ALL rows)
-#   timelines           — dict[co_id -> {meta, quarters: {label: amount}}]
 # ---------------------------------------------------------------------------
-def load_contributions(tracked_by_name: dict, coid_map: dict) -> tuple[list, dict]:
-    """
-    tracked_by_name: {UPPER_COMMITTEE_NAME -> committee_meta}
-    coid_map: filled in-place {co_id -> committee_meta} for tracked candidates
-    Returns: (contributions_list, timelines)
 
-    Amendment logic:
-      - Amended=Y  → this record has been superseded by a later amendment. SKIP.
-      - Amendment=Y → this IS the amendment (the current valid record). KEEP.
-      - Both N      → untouched original. KEEP.
+def load_contributions(tracked_by_name: dict, coid_map: dict) -> tuple[list, dict]:
+    """Parse the contributions CSV and build donor-lookup and timeline data.
+
+    Processes every row in 2026_ContributionData.csv.  Two outputs are built
+    simultaneously:
+
+    1. contributions_list — compact arrays for ALL contributions (all committees
+       in Colorado, not just tracked candidates).  Used by the donor-lookup tab
+       so users can search any donor across the full state finance system.
+
+    2. timelines — quarterly fundraising totals for tracked candidates only.
+       Used by the Fundraising tab to render Chart.js bar/line charts.
+
+    The coid_map argument is mutated in-place: when a contribution from a
+    tracked committee is encountered for the first time, its CO_ID is added
+    as a key so subsequent expenditure/loan lookups can use the numeric ID
+    instead of the committee name string.
+
+    Amendment handling (TRACER-specific):
+      - Amended=Y  → record was superseded; SKIP entirely.
+      - Amendment=Y → this IS the current corrected record; KEEP.
+      - Both N      → untouched original; KEEP.
+
+    Args:
+        tracked_by_name: { UPPER_COMMITTEE_NAME: committee_meta } from
+                         load_tracked_committees()
+        coid_map:        Empty dict, filled in-place with
+                         { co_id: committee_meta } for tracked candidates.
+
+    Returns:
+        (contributions_list, timelines) where:
+
+        contributions_list — list of compact 10-element arrays:
+            [date_str, amount, co_id, committee_name, candidate_name,
+             last, first, city, state, type_group]
+            (indices documented here match the JS column references in finance.html)
+
+        timelines — {
+            co_id: {
+              "co_id": ..., "committee_name": ..., "candidate_name": ...,
+              "chamber": ..., "district_label": ..., "party": ...,
+              "quarters": { "2026-Q1": 12500.0, "2026-Q2": 8200.0, ... }
+            }, ...
+          }
     """
-    # Compact columns stored per contribution row (indices for JS reference):
-    # 0:date  1:amount  2:co_id  3:committee_name  4:candidate_name
-    # 5:last  6:first   7:city   8:state   9:type_group
+    # Compact array layout per contribution (indices referenced in JS):
+    # 0:date_str  1:amount  2:co_id  3:committee_name  4:candidate_name
+    # 5:last      6:first   7:city   8:state           9:type_group
     contributions_list = []
-    timelines = {}  # co_id -> {meta, quarters}
+    timelines = {}  # co_id → {meta dict + quarters accumulator}
     skipped_amended = 0
     skipped_date = 0
 
+    # TRACER exports use latin-1 encoding (Windows-1252 compatible)
     with open(CONTRIBUTIONS_CSV, newline="", encoding="latin-1") as f:
         for row in csv.DictReader(f):
-            # Skip superseded records
+            # Skip superseded records — the Amended=Y flag means a later
+            # amendment row (Amendment=Y) exists with the correct data.
             if row["Amended"].strip().upper() == "Y":
                 skipped_amended += 1
                 continue
@@ -207,11 +324,32 @@ def load_contributions(tracked_by_name: dict, coid_map: dict) -> tuple[list, dic
 
 
 # ---------------------------------------------------------------------------
-# Load expenditures (tracked candidates only)
+# Load expenditures
 # ---------------------------------------------------------------------------
+
 def load_expenditures(coid_map: dict) -> dict:
-    """
-    Returns: dict[co_id -> list of expenditure dicts]
+    """Parse the expenditures CSV for tracked candidates only.
+
+    Only candidates whose CO_ID appears in coid_map (populated by
+    load_contributions) are included.  Expenditures are sorted by date
+    descending so the most recent spending appears first in the UI.
+
+    Amended rows (Amended=Y) are skipped for the same reason as contributions.
+
+    Args:
+        coid_map: { co_id: committee_meta } populated by load_contributions().
+
+    Returns:
+        {
+          co_id: [
+            { "date": "2026-01-15", "vendor": "Smith, John",
+              "amount": 500.0, "type": "...", "payment": "...",
+              "notes": "...", "city": "Denver", "state": "CO" },
+            ...
+          ],
+          ...
+        }
+        Sorted by date descending within each candidate.
     """
     expenditures = {}
     skipped_amended = 0
@@ -262,12 +400,37 @@ def load_expenditures(coid_map: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Load loans (tracked candidates only)
+# Load loans
 # ---------------------------------------------------------------------------
+
 def load_loans(coid_map: dict) -> dict:
-    """
-    Returns: dict[co_id -> {original_loans: [...], payments: [...]}]
-    Loan Type: O = original loan, P = payment on loan
+    """Parse the loans CSV for tracked candidates only.
+
+    Colorado campaign finance allows candidates to loan money to their own
+    committees.  Each loan has two possible row types distinguished by the
+    Type column:
+        "O" — Original loan (money flowing in to the committee)
+        "P" — Payment on an existing loan (money flowing out)
+
+    Args:
+        coid_map: { co_id: committee_meta } populated by load_contributions().
+
+    Returns:
+        {
+          co_id: {
+            "originals": [
+              { "date": "...", "source": "...", "source_type": "...",
+                "amount": 5000.0, "balance": 5000.0, "interest_rate": 0.0 },
+              ...
+            ],
+            "payments": [
+              { "date": "...", "source": "...", "amount": 500.0,
+                "loan_date": "...", "original_amount": 5000.0 },
+              ...
+            ]
+          },
+          ...
+        }
     """
     loans = {}
 
@@ -319,10 +482,26 @@ def load_loans(coid_map: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Sort timeline quarters chronologically
 # ---------------------------------------------------------------------------
+
 def sorted_quarters(quarters: dict) -> list[dict]:
-    """Returns [{label, amount, cumulative}, ...] in chronological order."""
+    """Convert an unordered quarter dict into a chronological list with cumulative totals.
+
+    The quarters accumulator in timelines stores { "2026-Q2": 8200.0, ... }
+    in insertion order, which may not be chronological.  This function
+    sorts them and adds a running cumulative sum for Chart.js line charts.
+
+    Args:
+        quarters: { "YYYY-Q#": amount_float, ... }
+
+    Returns:
+        [
+          { "label": "2025-Q4", "amount": 3200.00, "cumulative": 3200.00 },
+          { "label": "2026-Q1", "amount": 8200.00, "cumulative": 11400.00 },
+          ...
+        ]
+    """
     def quarter_sort_key(label):
-        # label format: "YYYY-Q#"
+        # Parse "YYYY-Q#" into a (year, quarter_number) tuple for sorting
         parts = label.split("-")
         year = int(parts[0])
         q = int(parts[1][1]) if len(parts) > 1 and parts[1].startswith("Q") else 0
@@ -340,14 +519,38 @@ def sorted_quarters(quarters: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
+
 def generate_html(contributions_list, timelines, expenditures, loans, coid_map) -> str:
-    # Build candidate list for dropdowns (sorted by display name)
+    """Render the complete finance.html page as a string.
+
+    Builds the HTML/CSS/JS scaffolding and injects all data as inline JSON
+    constants, producing a fully self-contained file that can be opened
+    directly in a browser or served as a static file.
+
+    Data injection strategy:
+      - JSON blobs are minified (no whitespace) using separators=(",", ":")
+        to keep file size down.  A typical season's data produces ~5-10 MB.
+      - The JavaScript reads these constants at page load and builds all UI
+        state from them — no fetch() calls are needed at runtime.
+
+    Args:
+        contributions_list: All contributions as compact arrays (from load_contributions)
+        timelines:          Quarterly fundraising per tracked candidate
+        expenditures:       Itemized spending per tracked candidate
+        loans:              Loan originals + payments per tracked candidate
+        coid_map:           { co_id: meta } for populating candidate dropdowns
+
+    Returns:
+        Complete HTML string ready to write to map/finance.html.
+    """
+    # Build the candidate list for the dropdown selectors, sorted by name
     all_candidates = []
     for co_id, meta in coid_map.items():
         name = meta.get("candidate_name") or meta.get("committee_name", "")
         chamber = meta.get("chamber", "")
         label = meta.get("district_label", "")
         party = meta.get("party", "")
+        # Display format: "DOE, JANE (House District 44)"
         display = name
         if label:
             display += f" ({label})"
@@ -361,7 +564,8 @@ def generate_html(contributions_list, timelines, expenditures, loans, coid_map) 
         })
     all_candidates.sort(key=lambda x: x["name"])
 
-    # Serialize timelines with sorted quarters
+    # Convert timelines: replace the unordered quarters dict with a sorted
+    # list that includes cumulative totals (for Chart.js rendering)
     timelines_out = {}
     for co_id, tl in timelines.items():
         timelines_out[co_id] = {
@@ -373,14 +577,14 @@ def generate_html(contributions_list, timelines, expenditures, loans, coid_map) 
             "quarters": sorted_quarters(tl["quarters"]),
         }
 
-    # JSON blobs
+    # Minified JSON blobs — injected directly into <script> const declarations
     j_contributions = json.dumps(contributions_list, separators=(",", ":"))
     j_timelines     = json.dumps(timelines_out,     separators=(",", ":"))
     j_expenditures  = json.dumps(expenditures,      separators=(",", ":"))
     j_loans         = json.dumps(loans,             separators=(",", ":"))
     j_candidates    = json.dumps(all_candidates,    separators=(",", ":"))
 
-    # Build candidate <option> HTML for dropdowns
+    # Pre-render <option> elements for the candidate dropdowns
     candidate_options = "\n".join(
         f'<option value="{c["co_id"]}">{c["display"]}</option>'
         for c in all_candidates
