@@ -115,6 +115,52 @@ def _build_search_json(db: sqlite3.Connection, year: int):
 
 
 # ---------------------------------------------------------------------------
+# Homepage data builder
+# ---------------------------------------------------------------------------
+
+def _build_homepage_data(db: sqlite3.Connection, year: int) -> tuple[str, str]:
+    """Return (leaderboard_json, races_agg_json) for the homepage explorer sections.
+
+    leaderboard_json — top-25 active candidates by raised, as a JSON array of
+        {name, party, label, chamber, district, raised, slug}.
+
+    races_agg_json — one row per race with D/R/Total aggregates, as a JSON
+        array of {race_slug, label, chamber, district, total_raised,
+        d_raised, r_raised, cand_count}.  Ordered by chamber then district
+        so House/Senate/Statewide grouping is stable for client-side tabs.
+    """
+    leaderboard_rows = db.execute(
+        """SELECT name, party, label, chamber, district, raised, slug
+           FROM candidates
+           WHERE year = ? AND status = 'Active'
+           ORDER BY raised DESC
+           LIMIT 25""",
+        (year,),
+    ).fetchall()
+    leaderboard = [dict(r) for r in leaderboard_rows]
+
+    agg_rows = db.execute(
+        """SELECT
+             race_slug,
+             label,
+             chamber,
+             district,
+             SUM(raised)                                                  AS total_raised,
+             SUM(CASE WHEN party = 'Democratic' THEN raised ELSE 0 END)  AS d_raised,
+             SUM(CASE WHEN party = 'Republican' THEN raised ELSE 0 END)  AS r_raised,
+             COUNT(*)                                                      AS cand_count
+           FROM candidates
+           WHERE year = ?
+           GROUP BY race_slug
+           ORDER BY chamber, CAST(district AS INTEGER)""",
+        (year,),
+    ).fetchall()
+    races_agg = [dict(r) for r in agg_rows]
+
+    return json.dumps(leaderboard), json.dumps(races_agg)
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -122,11 +168,14 @@ def _build_search_json(db: sqlite3.Connection, year: int):
 def homepage():
     db = get_db()
     races_json, statewide_json, city_map_json = _build_search_json(db, CURRENT_YEAR)
+    leaderboard_json, races_agg_json = _build_homepage_data(db, CURRENT_YEAR)
     return render_template(
         "home.html",
         races_json=races_json,
         statewide_json=statewide_json,
         city_map_json=city_map_json,
+        leaderboard_json=leaderboard_json,
+        races_agg_json=races_agg_json,
         active="home",
     )
 
@@ -195,4 +244,6 @@ def candidate_page(slug):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    import os
+    port = int(os.environ.get("PORT", 5001))
+    app.run(debug=True, port=port)
