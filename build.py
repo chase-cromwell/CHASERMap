@@ -48,6 +48,7 @@ MAP_DIR  = Path(__file__).parent / "map"
 # TRACER export CSVs produced by scraper.py
 CSV_FILE         = DATA_DIR / "tracer_2026_all_districts.csv"
 STATEWIDE_CSV    = DATA_DIR / "tracer_2026_statewide.csv"
+CONTACTS_CSV     = DATA_DIR / "tracer_2026_contacts.csv"
 
 # Output: the self-contained Leaflet map HTML
 OUTPUT_HTML      = MAP_DIR  / "index.html"
@@ -208,6 +209,57 @@ def is_incumbent(name: str, chamber: str, dist: str, incumbents: dict) -> bool:
 # Step 1 — Load CSV into district-keyed data structure
 # ---------------------------------------------------------------------------
 
+def load_contacts() -> dict:
+    """Load tracer_2026_contacts.csv and return a dict keyed by CommitteeName.
+
+    Each value is a dict of contact fields ready to be merged into a
+    candidate entry.  JSON columns (FilingsJSON, ComplaintsJSON, etc.) are
+    decoded from their stored string form.
+
+    Returns {} gracefully if the contacts CSV has not been scraped yet.
+    """
+    if not CONTACTS_CSV.exists():
+        return {}
+
+    contacts: dict = {}
+    with open(CONTACTS_CSV, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            comm = row.get("CommitteeName", "").strip()
+            if not comm:
+                continue
+            contacts[comm] = {
+                # Candidate contact
+                "org_id":          row.get("OrgID", ""),
+                "email":           row.get("Email", ""),
+                "phone":           row.get("Phone", ""),
+                "web":             row.get("Web", ""),
+                "cand_address":    row.get("CandMailAddress", ""),
+                "cand_full_name":  row.get("CandFullName", ""),
+                # Committee contact
+                "comm_name":       row.get("CommName", ""),
+                "comm_address":    row.get("CommPhysAddress", "") or row.get("CommMailAddress", ""),
+                "comm_phone":      row.get("CommPhone", ""),
+                "comm_web":        row.get("CommWeb", ""),
+                # Agents
+                "registered_agent": row.get("RegisteredAgent", ""),
+                "agent_phone":     row.get("AgentPhone", ""),
+                "agent_email":     row.get("AgentEmail", ""),
+                "dfa":             row.get("DFA", ""),
+                "dfa_phone":       row.get("DFAPhone", ""),
+                "dfa_email":       row.get("DFAEmail", ""),
+                # Registration dates
+                "date_registered": row.get("DateRegistered", ""),
+                "date_terminated": row.get("DateTerminated", ""),
+                # Tables
+                "filings":    json.loads(row.get("FilingsJSON",    "[]") or "[]"),
+                "filings_due": json.loads(row.get("FilingsDueJSON", "[]") or "[]"),
+                "complaints": json.loads(row.get("ComplaintsJSON", "[]") or "[]"),
+                "campaigns":  json.loads(row.get("CampaignsJSON",  "[]") or "[]"),
+            }
+    print(f"  Loaded {len(contacts)} contact records from {CONTACTS_CSV.name}")
+    return contacts
+
+
 def load_races() -> dict:
     """Read the TRACER legislative CSV and build a nested candidate data structure.
 
@@ -245,8 +297,9 @@ def load_races() -> dict:
           "House": { ... }
         }
     """
-    races = {"Senate": {}, "House": {}}
+    races      = {"Senate": {}, "House": {}}
     incumbents = load_incumbents()  # loads the Excel roster for incumbent detection
+    contacts   = load_contacts()    # loads contact/detail data keyed by committee name
 
     with open(CSV_FILE, encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -264,13 +317,20 @@ def load_races() -> dict:
                     "candidates": [],
                 }
 
+            # Merge contact detail if we have it for this committee
+            comm    = row["CommitteeName"].strip()
+            contact = contacts.get(comm, {})
+
             # Build candidate dict from CSV row.
             # Float conversion with `or 0` handles empty strings from TRACER.
+            context = f"{chamber}-{dist}"
             races[chamber][dist]["candidates"].append({
                 "name":      row["CandName"],
                 "party":     row["Party"],
-                "committee": row["CommitteeName"],
+                "committee": comm,
                 "status":    row["CandidateStatus"],
+                "_chamber":  chamber,
+                "slug":      _candidate_slug(row["CandName"], context),
                 "raised":    float(row["MonetaryContributions"] or 0),
                 "spent":     float(row["MonetaryExpenditures"]  or 0),
                 "coh":       float(row["EndFundsOnHand"]        or 0),
@@ -278,6 +338,27 @@ def load_races() -> dict:
                 "loans":     float(row["LoansReceived"]         or 0),
                 "vsl":       row["AcceptedVSL"],
                 "incumbent": is_incumbent(row["CandName"], chamber, dist, incumbents),
+                # Contact / detail fields (empty strings / [] when not yet scraped)
+                "org_id":           contact.get("org_id", ""),
+                "email":            contact.get("email", ""),
+                "phone":            contact.get("phone", ""),
+                "web":              contact.get("web", ""),
+                "cand_address":     contact.get("cand_address", ""),
+                "comm_address":     contact.get("comm_address", ""),
+                "comm_phone":       contact.get("comm_phone", ""),
+                "comm_web":         contact.get("comm_web", ""),
+                "registered_agent": contact.get("registered_agent", ""),
+                "agent_phone":      contact.get("agent_phone", ""),
+                "agent_email":      contact.get("agent_email", ""),
+                "dfa":              contact.get("dfa", ""),
+                "dfa_phone":        contact.get("dfa_phone", ""),
+                "dfa_email":        contact.get("dfa_email", ""),
+                "date_registered":  contact.get("date_registered", ""),
+                "date_terminated":  contact.get("date_terminated", ""),
+                "filings":          contact.get("filings", []),
+                "filings_due":      contact.get("filings_due", []),
+                "complaints":       contact.get("complaints", []),
+                "campaigns":        contact.get("campaigns", []),
             })
 
     return races
@@ -713,6 +794,37 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 }
 .raised-bar-spent { height: 100%; border-radius: 3px; }
 
+/* ── Clickable candidate cards ───────────────────────── */
+.cand-card { cursor: pointer; }
+.cand-card:hover { border-color: #94a3b8; background: #f8fafc; }
+.cand-card.inactive:hover { background: #f1f5f9; }
+
+/* Filings / complaints tables (not currently rendered in map — kept for reference) */
+.detail-section { margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid #f1f5f9; }
+.detail-section-label { font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.detail-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.detail-table th {
+  font-size: 9px; font-weight: 600; color: #94a3b8;
+  text-transform: uppercase; letter-spacing: .04em;
+  border-bottom: 1px solid #e2e8f0; padding: 3px 4px; text-align: left;
+}
+.detail-table td { padding: 4px 4px; border-bottom: 1px solid #f8fafc; color: #374151; vertical-align: top; max-width: 0; }
+.detail-table tr:last-child td { border-bottom: none; }
+.detail-table a { color: #3b82f6; text-decoration: none; }
+.detail-table a:hover { text-decoration: underline; }
+.dt-desc   { width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-date   { width: 22%; white-space: nowrap; }
+.dt-status { width: 26%; white-space: nowrap; font-weight: 600; }
+.dt-case   { width: 22%; white-space: nowrap; }
+.dt-subj   { width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-filed   { color: #16a34a; }
+.s-pending { color: #d97706; }
+.s-open    { color: #dc2626; }
+.s-closed  { color: #9ca3af; }
+/* Closed complaint rows are greyed out */
+.complaint-closed td { color: #cbd5e1; }
+.complaint-closed a  { color: #94a3b8; }
+
 /* ── Search ──────────────────────────────────────────── */
 #search-wrap { position: relative; }
 #search-input {
@@ -808,6 +920,13 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
   color: #94a3b8; padding: 4px 0 2px; border-bottom: 1px solid #e5e7eb; margin-bottom: 4px;
   grid-column: 1 / -1;
 }
+
+.sr-donor-row {
+  border-top: 1px solid #e2e8f0;
+  color: #3b82f6; font-weight: 500; font-size: 12px; cursor: pointer;
+  padding: 9px 12px; display: flex; align-items: center; gap: 6px;
+}
+.sr-donor-row:hover { background: #eff6ff; }
 
 /* Leaflet overrides */
 .district-label {
@@ -950,6 +1069,7 @@ body.vsl-hidden .cand-card::after { display: none; }
       <div id="statewide-chart"></div>
     </div>
   </div>
+
 
 </div>
 
@@ -1279,6 +1399,8 @@ function openSidebar(chamber, distNum) {
   });
 
   const PARTY_COLOR = { Democratic: '#1a56db', Republican: '#e02424' };
+
+  // Compact summary card — clicking opens the /candidates/<slug>/ Flask page
   const candCards = sorted.map(c => {
     const spentPct       = c.raised > 0 ? Math.min(c.spent / c.raised * 100, 100).toFixed(0) : 0;
     const barColor       = PARTY_COLOR[c.party] || '#6366f1';
@@ -1286,8 +1408,10 @@ function openSidebar(chamber, distNum) {
     const vslClass       = c.vsl === 'Yes' ? 'vsl-yes' : 'vsl-no';
     const incumbentBadge = c.incumbent
       ? '<span class="incumbent-badge" title="Incumbent">★</span>' : '';
+    const candUrl        = c.slug ? `/candidates/${c.slug}/` : '';
     return `
-    <div class="cand-card${inactive ? ' inactive' : ''} ${vslClass}">
+    <div class="cand-card${inactive ? ' inactive' : ''} ${vslClass}"
+         ${candUrl ? `onclick="window.open('${candUrl}','_blank')" title="View candidate detail"` : ''}>
       <div class="cand-name">${fmtName(c.name)}${incumbentBadge}</div>
       ${c.committee ? `<div class="cand-committee">${c.committee}</div>` : ''}
       <div class="cand-meta">
@@ -1330,6 +1454,7 @@ function openSidebar(chamber, distNum) {
 
   sidebar.classList.add('open');
 }
+
 
 document.getElementById('sidebar-close').addEventListener('click', () => {
   document.getElementById('sidebar').classList.remove('open');
@@ -1501,15 +1626,13 @@ function doSearch(q) {
   return searchIndex.filter(e => e.text.includes(lq)).slice(0, 8);
 }
 
+// URL of the Flask donor search page (adjust if the app is hosted elsewhere)
+const DONOR_SEARCH_URL = '/donors/';
+
 function renderResults(results, query) {
   const el  = document.getElementById('search-results');
   const lq  = query.toLowerCase();
-  if (!results.length) {
-    el.innerHTML = '<div class="sr-empty">No results</div>';
-    el.classList.add('visible');
-    return;
-  }
-  el.innerHTML = results.map(r => {
+  const districtHTML = results.map(r => {
     const cands = RACES[r.chamber][r.distNum].candidates;
     const matchedCities = r.cities.filter(c => c.toLowerCase().includes(lq));
     const matchedCands  = cands.filter(c =>
@@ -1527,13 +1650,31 @@ function renderResults(results, query) {
       </div>
     </div>`;
   }).join('');
+
+  const donorRow = `<div class="sr-donor-row" id="sr-donor-link">🔍 Search donors for "<strong>${query.replace(/</g,'&lt;')}</strong>" →</div>`;
+
+  if (!results.length) {
+    el.innerHTML = '<div class="sr-empty">No district results</div>' + donorRow;
+  } else {
+    el.innerHTML = districtHTML + donorRow;
+  }
   el.classList.add('visible');
   el.querySelectorAll('.search-result').forEach(item => {
     item.addEventListener('mousedown', e => {
-      e.preventDefault();  // prevent blur firing before click
+      e.preventDefault();
       goToDistrict(item.dataset.chamber, item.dataset.dist);
     });
   });
+  const donorLink = el.querySelector('#sr-donor-link');
+  if (donorLink) {
+    donorLink.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const q = encodeURIComponent(query);
+      window.open(`${DONOR_SEARCH_URL}?q=${q}`, '_blank');
+      document.getElementById('search-input').value = '';
+      el.classList.remove('visible');
+    });
+  }
 }
 
 function goToDistrict(chamber, distNum) {
@@ -1622,18 +1763,15 @@ buildLayer(activeChamber);
 
 
 def _fmt_dollars(n: float) -> str:
-    """Format a dollar amount as a compact human-readable string.
+    """Format a dollar amount as a human-readable string with full precision.
 
     Thresholds:
-        ≥ $1,000,000 → "$1.2M"    (1 decimal, millions suffix)
-        ≥ $1,000     → "$12,345"  (comma-separated, no cents)
-        < $1,000     → "$45"      (no cents)
+        ≥ $1,000     → "$1,234,567"  (comma-separated, no cents)
+        < $1,000     → "$45"         (no cents)
 
     Used as a Jinja2 filter ({{ candidate.raised | fmt_dollars }})
     and directly in the generated HTML map.
     """
-    if n >= 1_000_000:
-        return f"${n / 1_000_000:.1f}M"
     if n >= 1_000:
         return f"${n:,.0f}"
     return f"${n:.0f}"

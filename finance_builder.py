@@ -13,14 +13,18 @@ The generated page has three tabs:
   3. Expenditures   — itemized spending list for any tracked candidate
 
 Data sources (all under data/finances/):
-    2026_ContributionData.csv   — all contributions to all CO committees
-    2026_ExpenditureData.csv    — all expenditures
-    2026_LoanData.csv           — loans (original + repayments)
+    *ContributionData*.csv   — all contributions to all CO committees
+    *ExpenditureData*.csv    — all expenditures
+    *LoanData*.csv           — loans (original + repayments)
+
+All files matching those patterns are loaded automatically, so dropping
+a new year's data into the finances/ folder is sufficient — no code
+changes needed.  Files are processed in sorted (chronological) order.
 
 Only "tracked" candidates — those with a committee that appears in either
 tracer_2026_all_districts.csv or tracer_2026_statewide.csv — appear in the
 timeline/expenditure views.  The donor lookup includes ALL contributions
-across the entire Colorado campaign finance system for the current cycle.
+across the entire Colorado campaign finance system for all loaded years.
 
 Amendment handling:
     Rows with Amended=Y have been superseded and are skipped.
@@ -46,9 +50,14 @@ OUTPUT_HTML = MAP_DIR / "finance.html"
 
 TRACER_LEGISLATIVE = DATA_DIR / "tracer_2026_all_districts.csv"
 TRACER_STATEWIDE   = DATA_DIR / "tracer_2026_statewide.csv"
-CONTRIBUTIONS_CSV  = FINANCE_DIR / "2026_ContributionData.csv"
-EXPENDITURES_CSV   = FINANCE_DIR / "2026_ExpenditureData.csv"
-LOANS_CSV          = FINANCE_DIR / "2026_LoanData.csv"
+
+# Dynamically discover all contribution/expenditure/loan files in the
+# finances folder so prior-year data is automatically included when new
+# files are dropped in.  Files are sorted so they are processed in
+# chronological order (e.g. 2024_* before 2025_* before 2026_*).
+CONTRIBUTIONS_CSVS = sorted(FINANCE_DIR.glob("*ContributionData*.csv"))
+EXPENDITURES_CSVS  = sorted(FINANCE_DIR.glob("*ExpenditureData*.csv"))
+LOANS_CSVS         = sorted(FINANCE_DIR.glob("*LoanData*.csv"))
 
 # ---------------------------------------------------------------------------
 # Fiscal quarter config
@@ -262,61 +271,63 @@ def load_contributions(tracked_by_name: dict, coid_map: dict) -> tuple[list, dic
     skipped_amended = 0
     skipped_date = 0
 
-    # TRACER exports use latin-1 encoding (Windows-1252 compatible)
-    with open(CONTRIBUTIONS_CSV, newline="", encoding="latin-1") as f:
-        for row in csv.DictReader(f):
-            # Skip superseded records — the Amended=Y flag means a later
-            # amendment row (Amendment=Y) exists with the correct data.
-            if row["Amended"].strip().upper() == "Y":
-                skipped_amended += 1
-                continue
+    # TRACER exports use latin-1 encoding (Windows-1252 compatible).
+    # Iterate over all discovered contribution files (sorted chronologically).
+    for csv_path in CONTRIBUTIONS_CSVS:
+        print(f"  Loading contributions: {csv_path.name}")
+        with open(csv_path, newline="", encoding="latin-1") as f:
+            for row in csv.DictReader(f):
+                # Skip superseded records — the Amended=Y flag means a later
+                # amendment row (Amendment=Y) exists with the correct data.
+                if row["Amended"].strip().upper() == "Y":
+                    skipped_amended += 1
+                    continue
 
-            amount = parse_amount(row["ContributionAmount"])
-            dt = parse_date(row["ContributionDate"])
-            if dt is None:
-                skipped_date += 1
-                continue
+                amount = parse_amount(row["ContributionAmount"])
+                dt = parse_date(row["ContributionDate"])
+                if dt is None:
+                    skipped_date += 1
+                    continue
 
-            co_id = row["CO_ID"].strip()
-            committee_name = row["CommitteeName"].strip()
-            candidate_name = row["CandidateName"].strip()
-            last = row["LastName"].strip()
-            first = row["FirstName"].strip()
-            city = row["City"].strip()
-            state = row["State"].strip()
-            tg = classify_type(row["ContributorType"])
-            date_str = dt.strftime("%Y-%m-%d")
+                co_id = row["CO_ID"].strip()
+                committee_name = row["CommitteeName"].strip()
+                candidate_name = row["CandidateName"].strip()
+                last = row["LastName"].strip()
+                first = row["FirstName"].strip()
+                city = row["City"].strip()
+                state = row["State"].strip()
+                tg = classify_type(row["ContributorType"])
+                date_str = dt.strftime("%Y-%m-%d")
 
-            # Track CO_ID → metadata for tracked candidates
-            cn_upper = committee_name.upper()
-            if cn_upper in tracked_by_name and co_id not in coid_map:
-                coid_map[co_id] = {**tracked_by_name[cn_upper], "co_id": co_id}
+                # Track CO_ID → metadata for tracked candidates
+                cn_upper = committee_name.upper()
+                if cn_upper in tracked_by_name and co_id not in coid_map:
+                    coid_map[co_id] = {**tracked_by_name[cn_upper], "co_id": co_id}
 
-            # Compact array for donor lookup (all contributions)
-            contributions_list.append([
-                date_str, amount, co_id, committee_name, candidate_name,
-                last, first, city, state, tg
-            ])
+                # Compact array for donor lookup (all contributions)
+                contributions_list.append([
+                    date_str, amount, co_id, committee_name, candidate_name,
+                    last, first, city, state, tg
+                ])
 
-            # Timeline accumulation (tracked candidates only)
-            if co_id in coid_map or cn_upper in tracked_by_name:
-                # Resolve co_id for this committee if seen before
-                effective_coid = co_id
-                if effective_coid not in timelines:
-                    meta = coid_map.get(effective_coid, tracked_by_name.get(cn_upper, {}))
-                    timelines[effective_coid] = {
-                        "co_id": effective_coid,
-                        "committee_name": committee_name,
-                        "candidate_name": candidate_name,
-                        "chamber": meta.get("chamber", ""),
-                        "district_label": meta.get("district_label", ""),
-                        "party": meta.get("party", ""),
-                        "quarters": {},
-                    }
-                qkey = assign_quarter(dt)
-                timelines[effective_coid]["quarters"][qkey] = (
-                    timelines[effective_coid]["quarters"].get(qkey, 0.0) + amount
-                )
+                # Timeline accumulation (tracked candidates only)
+                if co_id in coid_map or cn_upper in tracked_by_name:
+                    effective_coid = co_id
+                    if effective_coid not in timelines:
+                        meta = coid_map.get(effective_coid, tracked_by_name.get(cn_upper, {}))
+                        timelines[effective_coid] = {
+                            "co_id": effective_coid,
+                            "committee_name": committee_name,
+                            "candidate_name": candidate_name,
+                            "chamber": meta.get("chamber", ""),
+                            "district_label": meta.get("district_label", ""),
+                            "party": meta.get("party", ""),
+                            "quarters": {},
+                        }
+                    qkey = assign_quarter(dt)
+                    timelines[effective_coid]["quarters"][qkey] = (
+                        timelines[effective_coid]["quarters"].get(qkey, 0.0) + amount
+                    )
 
     print(f"  Contributions: {len(contributions_list):,} kept, "
           f"{skipped_amended:,} amended skipped, {skipped_date:,} bad dates")
@@ -354,41 +365,42 @@ def load_expenditures(coid_map: dict) -> dict:
     expenditures = {}
     skipped_amended = 0
 
-    with open(EXPENDITURES_CSV, newline="", encoding="latin-1") as f:
-        for row in csv.DictReader(f):
-            if row["Amended"].strip().upper() == "Y":
-                skipped_amended += 1
-                continue
+    for csv_path in EXPENDITURES_CSVS:
+        print(f"  Loading expenditures: {csv_path.name}")
+        with open(csv_path, newline="", encoding="latin-1") as f:
+            for row in csv.DictReader(f):
+                if row["Amended"].strip().upper() == "Y":
+                    skipped_amended += 1
+                    continue
 
-            co_id = row["CO_ID"].strip()
-            cn_upper = row["CommitteeName"].strip().upper()
+                co_id = row["CO_ID"].strip()
 
-            # Only include tracked candidates
-            if co_id not in coid_map:
-                continue
+                # Only include tracked candidates
+                if co_id not in coid_map:
+                    continue
 
-            dt = parse_date(row["ExpenditureDate"])
-            if dt is None:
-                continue
+                dt = parse_date(row["ExpenditureDate"])
+                if dt is None:
+                    continue
 
-            amount = parse_amount(row["ExpenditureAmount"])
-            vendor_last = row["LastName"].strip()
-            vendor_first = row["FirstName"].strip()
-            vendor = f"{vendor_last}, {vendor_first}".strip(", ") if vendor_first else vendor_last
+                amount = parse_amount(row["ExpenditureAmount"])
+                vendor_last = row["LastName"].strip()
+                vendor_first = row["FirstName"].strip()
+                vendor = f"{vendor_last}, {vendor_first}".strip(", ") if vendor_first else vendor_last
 
-            if co_id not in expenditures:
-                expenditures[co_id] = []
+                if co_id not in expenditures:
+                    expenditures[co_id] = []
 
-            expenditures[co_id].append({
-                "date": dt.strftime("%Y-%m-%d"),
-                "vendor": vendor,
-                "amount": amount,
-                "type": row["ExpenditureType"].strip(),
-                "payment": row["PaymentType"].strip(),
-                "notes": row["Explanation"].strip()[:120],  # cap length
-                "city": row["City"].strip(),
-                "state": row["State"].strip(),
-            })
+                expenditures[co_id].append({
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "vendor": vendor,
+                    "amount": amount,
+                    "type": row["ExpenditureType"].strip(),
+                    "payment": row["PaymentType"].strip(),
+                    "notes": row["Explanation"].strip()[:120],  # cap length
+                    "city": row["City"].strip(),
+                    "state": row["State"].strip(),
+                })
 
     # Sort each candidate's expenditures by date descending
     for co_id in expenditures:
@@ -434,7 +446,19 @@ def load_loans(coid_map: dict) -> dict:
     """
     loans = {}
 
-    with open(LOANS_CSV, newline="", encoding="latin-1") as f:
+    for csv_path in LOANS_CSVS:
+        print(f"  Loading loans: {csv_path.name}")
+        _load_loans_file(csv_path, coid_map, loans)
+
+    print(f"  Loans: {sum(len(v['originals']) for v in loans.values())} originals, "
+          f"{sum(len(v['payments']) for v in loans.values())} payments across "
+          f"{len(loans)} candidates")
+    return loans
+
+
+def _load_loans_file(csv_path: Path, coid_map: dict, loans: dict) -> None:
+    """Read one loan CSV file and accumulate results into *loans* in-place."""
+    with open(csv_path, newline="", encoding="latin-1") as f:
         for row in csv.DictReader(f):
             if row["Amended"].strip().upper() == "Y":
                 continue
@@ -473,10 +497,72 @@ def load_loans(coid_map: dict) -> dict:
                     "original_amount": loan_amount,
                 })
 
-    print(f"  Loans: {sum(len(v['originals']) for v in loans.values())} originals, "
-          f"{sum(len(v['payments']) for v in loans.values())} payments across "
-          f"{len(loans)} candidates")
-    return loans
+
+# ---------------------------------------------------------------------------
+# Load quarterly raised + spent (lightweight summary for Flask pages)
+# ---------------------------------------------------------------------------
+
+def load_quarterly_data() -> dict:
+    """Build per-committee quarterly raised and spent totals from all finance CSVs.
+
+    Unlike load_contributions() / load_expenditures() which build the full
+    finance.html explorer dataset, this function does a single focused pass
+    and produces a compact summary used by ingest.py to populate the
+    quarters_raised_json and quarters_spent_json columns in the candidates
+    table.
+
+    Only committees that appear in the legislative or statewide TRACER CSVs
+    are included — untracked committees are ignored.
+
+    Returns:
+        { UPPER_COMMITTEE_NAME: {
+            "raised": { "2024-Q1": 500.0, "2024-Q2": 1200.0, ... },
+            "spent":  { "2024-Q1": 300.0, "2024-Q2": 800.0,  ... },
+          }, ...
+        }
+    """
+    tracked_by_name = load_tracked_committees()
+    quarterly: dict[str, dict] = {}
+
+    def _entry(cn_upper: str) -> dict:
+        if cn_upper not in quarterly:
+            quarterly[cn_upper] = {"raised": {}, "spent": {}}
+        return quarterly[cn_upper]
+
+    print("  Quarterly: scanning contribution files...")
+    for csv_path in CONTRIBUTIONS_CSVS:
+        with open(csv_path, newline="", encoding="latin-1") as f:
+            for row in csv.DictReader(f):
+                if row["Amended"].strip().upper() == "Y":
+                    continue
+                cn_upper = row["CommitteeName"].strip().upper()
+                if cn_upper not in tracked_by_name:
+                    continue
+                dt = parse_date(row["ContributionDate"])
+                if dt is None:
+                    continue
+                qkey = assign_quarter(dt)
+                e = _entry(cn_upper)
+                e["raised"][qkey] = e["raised"].get(qkey, 0.0) + parse_amount(row["ContributionAmount"])
+
+    print("  Quarterly: scanning expenditure files...")
+    for csv_path in EXPENDITURES_CSVS:
+        with open(csv_path, newline="", encoding="latin-1") as f:
+            for row in csv.DictReader(f):
+                if row["Amended"].strip().upper() == "Y":
+                    continue
+                cn_upper = row["CommitteeName"].strip().upper()
+                if cn_upper not in tracked_by_name:
+                    continue
+                dt = parse_date(row["ExpenditureDate"])
+                if dt is None:
+                    continue
+                qkey = assign_quarter(dt)
+                e = _entry(cn_upper)
+                e["spent"][qkey] = e["spent"].get(qkey, 0.0) + parse_amount(row["ExpenditureAmount"])
+
+    print(f"  Quarterly data: {len(quarterly)} tracked committees with timeline data")
+    return quarterly
 
 
 # ---------------------------------------------------------------------------

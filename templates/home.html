@@ -47,8 +47,9 @@
   font-size: 10px; font-weight: 700; padding: 2px 7px;
   border-radius: 4px; flex-shrink: 0;
 }
-.sr-type-race { background: #334155; color: #e2e8f0; }
-.sr-type-cand { background: #dbeafe; color: #1e40af; }
+.sr-type-race  { background: #334155; color: #e2e8f0; }
+.sr-type-cand  { background: #dbeafe; color: #1e40af; }
+.sr-type-donor { background: #fef9c3; color: #854d0e; }
 .sr-body { flex: 1; min-width: 0; }
 .sr-title { font-size: 13px; font-weight: 600; color: #0f172a; }
 .sr-sub {
@@ -200,10 +201,10 @@
   <p>Explore fundraising data for all legislative and statewide races.</p>
   <div class="search-outer">
     <input id="hp-search" class="search-bar" type="text"
-           placeholder="Search races, candidates, cities&#8230;" autocomplete="off">
+           placeholder="Search races, candidates, donors&#8230;" autocomplete="off">
     <div id="hp-results"></div>
   </div>
-  <p class="search-hint">Try &ldquo;House District 44&rdquo;, &ldquo;Denver&rdquo;, or a candidate name</p>
+  <p class="search-hint">Try &ldquo;House District 44&rdquo;, &ldquo;Denver&rdquo;, a candidate, or a donor name</p>
 </div>
 
 {# ── Map CTA ───────────────────────────────────────────────────── #}
@@ -366,9 +367,29 @@ const inp = document.getElementById('hp-search');
 const box = document.getElementById('hp-results');
 let debounce;
 
+// Title-case a string ("JOHN" → "John", "O'BRIEN" → "O'Brien")
+function toTitle(s) {
+  return (s || '').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
+
 inp.addEventListener('input', () => {
   clearTimeout(debounce);
-  debounce = setTimeout(() => renderSearch(doSearch(inp.value)), 150);
+  const q = inp.value.trim();
+  if (!q) { box.innerHTML = ''; box.classList.remove('visible'); return; }
+  debounce = setTimeout(async () => {
+    const local = doSearch(q);
+    let donors = [];
+    if (q.length >= 2) {
+      try {
+        const resp = await fetch('/search/donors?q=' + encodeURIComponent(q));
+        if (resp.ok) {
+          const data = await resp.json();
+          donors = data.results || data;  // handle both new {results:...} and legacy bare array
+        }
+      } catch (_) {}
+    }
+    renderSearch(local, donors);
+  }, 200);
 });
 inp.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
@@ -379,8 +400,9 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.search-outer')) box.classList.remove('visible');
 });
 
-function renderSearch(results) {
-  if (!results.length) {
+function renderSearch(results, donors) {
+  donors = donors || [];
+  if (!results.length && !donors.length) {
     box.innerHTML = inp.value ? '<div class="sr-empty">No results found</div>' : '';
     box.classList.toggle('visible', !!inp.value);
     return;
@@ -408,6 +430,27 @@ function renderSearch(results) {
         + ' <span class="party-badge ' + bc + '">' + r.party + '</span></div>'
         + '<div class="sr-sub">' + r.sub + '</div></div></a>';
     });
+  }
+  if (donors.length) {
+    html += '<div class="sr-section-head">Donors</div>';
+    donors.slice(0, 5).forEach(d => {
+      const url = '/donors/?last=' + encodeURIComponent(d.donor_last)
+                + '&first=' + encodeURIComponent(d.donor_first)
+                + '&city='  + encodeURIComponent(d.donor_city)
+                + '&state=' + encodeURIComponent(d.donor_state);
+      const name = [toTitle(d.donor_first), toTitle(d.donor_last)].filter(Boolean).join(' ');
+      const loc  = d.donor_city ? toTitle(d.donor_city) + ', ' + d.donor_state : d.donor_state;
+      const total = d.total ? ' \u00b7 $' + Math.round(d.total).toLocaleString() : '';
+      const n     = d.n === 1 ? '1 contribution' : d.n + ' contributions';
+      html += '<a class="sr-item" href="' + url + '">'
+        + '<span class="sr-type sr-type-donor">Donor</span>'
+        + '<div class="sr-body"><div class="sr-title">' + name
+        + (loc ? ' <span style="font-weight:400;color:#64748b;font-size:11px;">' + loc + '</span>' : '')
+        + '</div><div class="sr-sub">' + n + total + '</div></div></a>';
+    });
+    html += '<a class="sr-item" href="/donors/?q=' + encodeURIComponent(inp.value.trim()) + '" '
+          + 'style="color:#2563eb;font-weight:500;font-size:12px;justify-content:center;">'
+          + '🔍 See all donor results &rarr;</a>';
   }
   box.innerHTML = html;
   box.classList.add('visible');

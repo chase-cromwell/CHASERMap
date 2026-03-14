@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}{{ donor_name }} &mdash; Donor History{% endblock %}
+
+{% block head %}
+<style>
+/* --- Donor summary row ------------------------------------------------- */
+.donor-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.donor-location { font-size: 13px; color: #64748b; }
+
+/* --- Contribution table ------------------------------------------------- */
+.contrib-table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 32px;
+}
+.contrib-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.contrib-table th {
+  background: #f8fafc;
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.contrib-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+  vertical-align: top;
+}
+.contrib-table tr:last-child td { border-bottom: none; }
+.contrib-table a { color: #2563eb; text-decoration: none; }
+.contrib-table a:hover { text-decoration: underline; }
+.contrib-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
+.contrib-type {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  white-space: nowrap;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <a class="back-link" href="/">&larr; Back to Search</a>
+
+  <h1 class="page-title">{{ donor_name }}</h1>
+  <div class="donor-meta">
+    {% if donor_location %}
+      <span class="donor-location">{{ donor_location }}</span>
+    {% endif %}
+  </div>
+
+  {# Summary stats #}
+  <div class="stat-grid" style="margin-top:12px;">
+    <div class="stat-cell">
+      <div class="lbl">Total Donated</div>
+      <div class="val">{{ total | fmt_dollars }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Contributions</div>
+      <div class="val">{{ contributions | length }}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="lbl">Committees</div>
+      <div class="val">{{ committee_count }}</div>
+    </div>
+  </div>
+
+  {# Contribution history table #}
+  <div class="section-label">Contribution History</div>
+  <div class="contrib-table-wrap">
+    <table class="contrib-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Amount</th>
+          <th>Committee / Candidate</th>
+          <th>Type</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in contributions %}
+        <tr>
+          <td style="white-space:nowrap;">{{ c.date }}</td>
+          <td class="contrib-amount">${{ "{:,.2f}".format(c.amount) }}</td>
+          <td>
+            {% if c.cand_slug %}
+              <a href="/candidates/{{ c.cand_slug }}/">{{ c.committee_name }}</a>
+              {% if c.candidate_name %}
+                <div style="font-size:11px;color:#64748b;margin-top:2px;">{{ c.candidate_name }}</div>
+              {% endif %}
+            {% elif c.race_slug %}
+              <a href="/races/{{ c.race_slug }}/">{{ c.committee_name }}</a>
+            {% else %}
+              {{ c.committee_name or '—' }}
+              {% if c.candidate_name %}
+                <div style="font-size:11px;color:#64748b;margin-top:2px;">{{ c.candidate_name }}</div>
+              {% endif %}
+            {% endif %}
+          </td>
+          <td>
+            {% set type_labels = {
+              'I': 'Individual', 'L': 'LLC Member',
+              'B': 'Business',   'C': 'Committee', 'O': 'Other'
+            } %}
+            <span class="contrib-type">{{ type_labels.get(c.donor_type, c.donor_type or '—') }}</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}

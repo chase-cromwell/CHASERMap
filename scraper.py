@@ -23,10 +23,14 @@ Operating modes (controlled via command-line flags):
     python3 scraper.py --statewide      # scrape statewide executive offices
     python3 scraper.py --reprocess      # re-merge listing data without re-scraping
     python3 scraper.py --discover       # print TRACER's current office code map
+    python3 scraper.py --contacts                   # scrape all chambers
+    python3 scraper.py --contacts House             # House only
+    python3 scraper.py --contacts Senate Statewide  # multiple chambers
 
 Output files:
     data/tracer_2026_all_districts.csv  # legislative candidates (all districts)
     data/tracer_2026_statewide.csv      # statewide office candidates
+    data/tracer_2026_contacts.csv       # contact info + TRACER IDs + complaints + filings
 
 Prerequisites:
     pip install playwright && playwright install chromium
@@ -82,6 +86,11 @@ STATEWIDE_OFFICES: dict[str, str] = {
 }
 
 STATEWIDE_OUTPUT_FILE = DATA_DIR / "tracer_2026_statewide.csv"
+CONTACTS_OUTPUT_FILE  = DATA_DIR / "tracer_2026_contacts.csv"
+
+# URLs for the contact-detail scraping mode
+COMMITTEE_SEARCH_URL = "https://tracer.sos.colorado.gov/PublicSite/SearchPages/CommitteeSearch.aspx"
+CONTACT_DETAIL_BASE  = "https://tracer.sos.colorado.gov/PublicSite/SearchPages/CandidateDetail.aspx"
 
 # Delay between district scrapes (milliseconds) to avoid overwhelming TRACER.
 # Increase this if you see intermittent failures or rate-limit errors.
@@ -552,6 +561,618 @@ async def scrape_statewide_main() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Contact-detail scraping helpers  (--contacts mode)
+# ---------------------------------------------------------------------------
+
+async def get_org_id_for_committee(page, committee_name: str) -> str | None:
+    """Search CommitteeSearch.aspx by committee name and return the OrgID of
+    the first matching result.
+
+    The OrgID is the internal TRACER identifier embedded in every
+    CandidateDetail.aspx link, e.g. ?OrgID=49405.  It is not available in
+    any CSV export and must be obtained by navigating the committee search.
+
+    Strategy:
+        1. Fill the committee-name input with the exact name.
+        2. Submit the form and wait for networkidle.
+        3. Scan all anchor hrefs for the OrgID= query parameter.
+           First, try to find an <a> whose link text exactly matches the
+           committee name (avoids false positives when the search returns
+           multiple committees with similar names).
+        4. Fall back to the first OrgID-bearing href on the page.
+
+    Returns the OrgID string (e.g. "49405"), or None if not found.
+    """
+    await page.goto(COMMITTEE_SEARCH_URL)
+    await page.wait_for_load_state("networkidle")
+
+    # Fill committee name.  Use the specific text-input ID to avoid the
+    # radio-button inputs whose names also contain "CommitteeName".
+    await page.locator('#_ctl0_Content_txtCommitteeName').fill(committee_name)
+
+    # The Search button triggers a full ASP.NET page postback (form POST).
+    # Wrap in expect_navigation so we wait for the round-trip to complete
+    # before scanning results — plain wait_for_load_state() can return
+    # immediately if the page was already at networkidle before the click.
+    async with page.expect_navigation(wait_until="networkidle"):
+        await page.locator('input[value="Search"]').click()
+
+    # Search the full page HTML for any OrgID pattern.
+    # The OrgID appears somewhere in the DOM after a search — in onclick
+    # attributes, __doPostBack arguments, hidden inputs, or data attributes —
+    # even when anchor hrefs use javascript: postbacks instead of direct URLs.
+    # Using outerHTML catches every attribute and text node in one pass.
+    org_id = await page.evaluate(r"""() => {
+        const html = document.documentElement.outerHTML;
+        // Match OrgID= followed immediately by digits (href, onclick, hidden
+        // field values, JavaScript literals, etc.)
+        const m = html.match(/OrgID[='":\s]+(\d{3,6})/i);
+        return m ? m[1] : null;
+    }""")
+    if org_id:
+        return org_id
+
+    # If the search results page genuinely contains no OrgID anywhere, try
+    # clicking the first result row and extracting from the detail page HTML.
+    result_link = None
+    for link in await page.locator('td a').all():
+        href = (await link.get_attribute("href") or "").lower()
+        if href.startswith("http"):
+            continue          # nav / breadcrumb — skip
+        result_link = link
+        break
+
+    if result_link is None:
+        return None
+
+    async with page.expect_navigation(wait_until="networkidle"):
+        await result_link.click()
+
+    # Try URL first, then fall back to searching the detail page HTML.
+    m = re.search(r'OrgID=(\d+)', page.url, re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    return await page.evaluate(r"""() => {
+        const html = document.documentElement.outerHTML;
+        const m = html.match(/OrgID[='":\s]+(\d{3,6})/i);
+        return m ? m[1] : null;
+    }""")
+
+
+_TRACER_BASE = "https://tracer.sos.colorado.gov/PublicSite/SearchPages"
+
+_JS_NEXT_PAGE = r"""(id) => {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    const trs = [...el.querySelectorAll('tr')];
+    const last = trs[trs.length - 1];
+    if (!last) return null;
+    const span = last.querySelector('span');
+    if (!span) return null;
+    const cur = parseInt(span.innerText.trim(), 10);
+    if (isNaN(cur)) return null;
+    const links = [...last.querySelectorAll('a')];
+    return links.some(a => parseInt(a.innerText.trim(), 10) === cur + 1) ? cur + 1 : null;
+}"""
+
+
+async def _next_grid_page(page, grid_id: str) -> bool:
+    """Click the next-page link for a DataGrid if one exists.  Returns True if clicked."""
+    next_num = await page.evaluate(_JS_NEXT_PAGE, grid_id)
+    if next_num is None:
+        return False
+    next_link = page.locator(f'#{grid_id} tr:last-child a').filter(
+        has_text=re.compile(rf'^{next_num}$')
+    )
+    async with page.expect_navigation(wait_until="networkidle"):
+        await next_link.click()
+    return True
+
+
+async def _collect_filing_rows(page) -> list[dict]:
+    """Collect all filing history rows, resolving each to its FilingDetail URL.
+
+    Filing description links use __doPostBack and redirect to
+    FilingDetail.aspx?FilingID=XXXXX.  We follow all postbacks in parallel
+    via fetch() inside the browser using the existing authenticated session,
+    so no Playwright navigation is needed.
+
+    Handles pagination: if the grid still has a next page after setting the
+    page size to 50, this function clicks through all remaining pages.
+    """
+    GRID_ID = "_ctl0_Content_dgdFilingHistory"
+
+    # Async JS: collect rows + link targets, then parallel-fetch all FilingIDs.
+    _JS = r"""async (gridId) => {
+        const el = document.getElementById(gridId);
+        if (!el) return [];
+        const form = document.forms[0];
+
+        const rowData = [];
+        el.querySelectorAll('tr').forEach((tr, i) => {
+            if (i === 0) return;
+            const cells = [...tr.querySelectorAll('td')];
+            if (cells.length < 2) return;
+            const link = tr.querySelector('a[href*="lnkFilingHist"]');
+            const m = link?.getAttribute('href')?.match(/'([^']+)'/);
+            rowData.push({ cells: cells.map(c => c.innerText.trim()), target: m?.[1] || null });
+        });
+
+        const urls = await Promise.all(rowData.map(async ({target}) => {
+            if (!target) return '';
+            const data = new FormData(form);
+            data.set('__EVENTTARGET',  target);
+            data.set('__EVENTARGUMENT', '');
+            try {
+                const resp = await fetch(form.action, {method:'POST', body:data, redirect:'follow'});
+                const fid  = new URL(resp.url).searchParams.get('FilingID');
+                return fid ? `__BASE__/FilingDetail.aspx?FilingID=${fid}` : '';
+            } catch(e) { return ''; }
+        }));
+
+        return rowData.map((r, i) => [r.cells, urls[i]]);
+    }""".replace("__BASE__", _TRACER_BASE)
+
+    all_rows: list[dict] = []
+    while True:
+        page_data = await page.evaluate(_JS, GRID_ID)
+        for cells, url in page_data:
+            if len(cells) >= 8:
+                all_rows.append({
+                    "committee":    cells[0],
+                    "description":  cells[1],
+                    "period_begin": cells[2],
+                    "period_end":   cells[3],
+                    "due_date":     cells[4],
+                    "filed_on":     cells[5],
+                    "amended":      cells[6],
+                    "status":       cells[7],
+                    "url":          url or "",
+                })
+        if not await _next_grid_page(page, GRID_ID):
+            break
+    return all_rows
+
+
+async def _collect_complaint_rows(page) -> list[dict]:
+    """Collect all complaints rows, extracting each ComplaintDetail URL.
+
+    Complaint case-number links use __doPostBack but the destination URL
+    (ComplaintDetail.aspx?ID=XXXX) is embedded in the page's raw HTML as
+    an onclick attribute value.  We regex-extract the IDs from page.content()
+    and zip them with the table rows — they appear in the same order.
+
+    Handles pagination across multiple pages of the complaints grid.
+    """
+    GRID_ID = "_ctl0_Content_dgdComplaints"
+
+    _JS_ROWS = r"""(id) => {
+        const el = document.getElementById(id);
+        if (!el) return [];
+        const out = [];
+        el.querySelectorAll('tr').forEach((tr, i) => {
+            if (i === 0) return;
+            const cells = [...tr.querySelectorAll('td')];
+            if (cells.length < 2) return;
+            out.push(cells.map(c => c.innerText.trim()));
+        });
+        return out;
+    }"""
+
+    all_rows: list[dict] = []
+    while True:
+        rows = await page.evaluate(_JS_ROWS, GRID_ID)
+        html = await page.content()
+        ids  = re.findall(r'ComplaintDetail\.aspx\?ID=(\d+)', html)
+        base = f"{_TRACER_BASE}/ComplaintDetail.aspx?ID="
+
+        for i, cells in enumerate(rows):
+            if len(cells) >= 5:
+                all_rows.append({
+                    "committee":   cells[0],
+                    "case_number": cells[1],
+                    "date_filed":  cells[2],
+                    "complainant": cells[3],
+                    "subject":     cells[4],
+                    "status":      cells[5] if len(cells) > 5 else "",
+                    "url":         (base + ids[i]) if i < len(ids) else "",
+                })
+        if not await _next_grid_page(page, GRID_ID):
+            break
+    return all_rows
+
+
+async def _collect_all_grid_pages(page, grid_id: str) -> list[list[str]]:
+    """Collect all rows from a paginated TRACER DataGrid (plain cell text only).
+
+    Used for grids where links are not needed (campaigns, filings_due).
+    For filing history and complaints use the specialised collectors above.
+    """
+    _JS_ROWS = r"""(id) => {
+        const el = document.getElementById(id);
+        if (!el) return [];
+        const out = [];
+        el.querySelectorAll('tr').forEach((tr, i) => {
+            if (i === 0) return;
+            const cells = [...tr.querySelectorAll('td')];
+            if (cells.length < 2) return;
+            out.push(cells.map(c => c.innerText.trim()));
+        });
+        return out;
+    }"""
+
+    all_rows: list[list[str]] = []
+    while True:
+        rows = await page.evaluate(_JS_ROWS, grid_id)
+        all_rows.extend(rows)
+        if not await _next_grid_page(page, grid_id):
+            break
+    return all_rows
+
+
+async def extract_candidate_detail(page) -> dict:
+    """Extract every available field from a loaded CandidateDetail.aspx page.
+
+    Steps:
+      1. Set page-size dropdowns to 50 (max) for the three paginated grids
+         so that most candidates need only one page per grid.
+      2. Iterate through any remaining pages of each grid via
+         _collect_all_grid_pages().
+      3. Extract all scalar fields in a single page.evaluate() call.
+
+    NOTE: TRACER grids use the 'dgd' prefix (DataGrid), not 'gdv' (GridView).
+    """
+    # ------------------------------------------------------------------
+    # Step 1: maximise page sizes so pagination is rarely needed
+    # ------------------------------------------------------------------
+    PAGE_SIZE_DROPDOWNS = [
+        '_ctl0_Content_dgdFilingHistory__ctl8_dgdFilingHistoryPageSizeDropDown',
+        '_ctl0_Content_dgdFilingsDue__ctl8_dgdFilingsDuePageSizeDropDown',
+        '_ctl0_Content_dgdComplaints__ctl8_dgdComplaintsPageSizeDropDown',
+    ]
+    for dd_id in PAGE_SIZE_DROPDOWNS:
+        el = page.locator(f'#{dd_id}')
+        if await el.count() > 0 and await el.input_value() != '50':
+            async with page.expect_navigation(wait_until="networkidle"):
+                await el.select_option('50')
+
+    # ------------------------------------------------------------------
+    # Step 2: collect all rows from each paginated grid
+    # Filing history and complaints use specialised collectors that also
+    # resolve hyperlinks.  Campaigns and filings-due need plain text only.
+    # ------------------------------------------------------------------
+    filing_rows = await _collect_filing_rows(page)
+    comp_rows   = await _collect_complaint_rows(page)
+    due_rows    = await _collect_all_grid_pages(page, '_ctl0_Content_dgdFilingsDue')
+    camp_rows   = await _collect_all_grid_pages(page, '_ctl0_Content_dgdCampaigns')
+
+    # ------------------------------------------------------------------
+    # Step 3: extract all scalar fields in one JS round-trip
+    # ------------------------------------------------------------------
+    scalar = await page.evaluate(r"""() => {
+        function t(id) {
+            const el = document.getElementById(id);
+            return el ? el.innerText.trim() : '';
+        }
+        function addr(...ids) {
+            return ids.map(id => t(id)).filter(Boolean).join(', ');
+        }
+        return {
+            org_id:              new URLSearchParams(window.location.search).get('OrgID') || '',
+            candidate_id:        t('_ctl0_Content_lblCandidateID'),
+            committee_id:        t('_ctl0_Content_lblCommitteeID'),
+            cand_name:           t('_ctl0_Content_lblCandName'),
+            cand_mail_address:   addr(
+                '_ctl0_Content_lblCandMailAddress1',
+                '_ctl0_Content_lblCandMailAddress2',
+                '_ctl0_Content_lblCandMailCityStateZip',
+            ),
+            cand_status:         t('_ctl0_Content_lblCandStatus'),
+            campaign_status:     t('_ctl0_Content_lblCampaignStatus'),
+            cand_phone:          t('_ctl0_Content_lblCandPhone'),
+            cand_fax:            t('_ctl0_Content_lblCandFax'),
+            date_affidavit_filed: t('_ctl0_Content_lblCandDateDeclared'),
+            email:               t('_ctl0_Content_lnkCandEmail'),
+            jurisdiction:        t('_ctl0_Content_lblCandJurisdiction'),
+            web:                 t('_ctl0_Content_lnkCandWeb') || t('_ctl0_Content_lnkCommWeb'),
+            party:               t('_ctl0_Content_lblCandParty'),
+            vsl:                 t('_ctl0_Content_lblCandVolSpendLimit'),
+            office:              t('_ctl0_Content_lblCandOffice'),
+            comm_name:           t('_ctl0_Content_lblCommName'),
+            comm_type:           t('_ctl0_Content_lblCommitteeType'),
+            comm_phys_address:   addr(
+                '_ctl0_Content_lblCommPhysAddress1',
+                '_ctl0_Content_lblCommPhysAddress2',
+                '_ctl0_Content_lblCommPhysCityStateZip',
+            ),
+            comm_mail_address:   addr(
+                '_ctl0_Content_lblCommMailAddress1',
+                '_ctl0_Content_lblCommMailAddress2',
+                '_ctl0_Content_lblCommMailCityStateZip',
+            ),
+            comm_status:         t('_ctl0_Content_lblCommStatus'),
+            date_registered:     t('_ctl0_Content_lblCommDateOrganized'),
+            date_terminated:     t('_ctl0_Content_lblCommDateTerminated'),
+            comm_phone:          t('_ctl0_Content_lblCommPhone'),
+            comm_fax:            t('_ctl0_Content_lblCommFax'),
+            comm_web:            t('_ctl0_Content_lnkCommWeb'),
+            purpose:             t('_ctl0_Content_lblCommPurpose'),
+            registered_agent:    t('_ctl0_Content_lblRegisteredAgent'),
+            agent_phone:         t('_ctl0_Content_lblAgentPhone'),
+            agent_email:         t('_ctl0_Content_lnkAgentEmail'),
+            dfa:                 t('_ctl0_Content_lblDFA'),
+            dfa_phone:           t('_ctl0_Content_lblDFAPhone'),
+            dfa_email:           t('_ctl0_Content_lnkDFAEmail'),
+            fin_as_of:           t('_ctl0_Content_lblFilingName'),
+            fin_period_end:      t('_ctl0_Content_lblFilingPeriodEndDate'),
+            fin_filed_date:      t('_ctl0_Content_lblFilingFiledDate'),
+            election_cycle:      t('_ctl0_Content_lblElectionCycleName'),
+            cand_expenditures:   t('_ctl0_Content_lblCandidateExpenditures_EC'),
+            beginning_balance:   t('_ctl0_Content_lblBeginningBalance_EC'),
+            total_contributions: t('_ctl0_Content_lblTotalCont_EC'),
+            total_loans_received: t('_ctl0_Content_lblTotalLoansRcvd_EC'),
+            total_expenditures:  t('_ctl0_Content_lblTotalExp_EC'),
+            total_loans_repaid:  t('_ctl0_Content_lblTotalLoansRepaid_EC'),
+            ending_balance:      t('_ctl0_Content_lblEndingBalance_EC'),
+            non_mon_contributions: t('_ctl0_Content_lblNonMonContr_EC'),
+            non_mon_expenditures:  t('_ctl0_Content_lblNonMonExp_EC'),
+        };
+    }""")
+
+    # ------------------------------------------------------------------
+    # Step 4: shape plain-text table rows into structured dicts.
+    # filing_rows and comp_rows are already shaped by their collectors.
+    # ------------------------------------------------------------------
+    def shape_due(rows):
+        return [{"committee": c[0], "description": c[1], "period_begin": c[2],
+                 "period_end": c[3], "due_date": c[4]}
+                for c in rows if len(c) >= 5]
+
+    def shape_campaigns(rows):
+        return [{"committee": c[0], "election_cycle": c[1], "party": c[2],
+                 "jurisdiction": c[3], "office": c[4],
+                 "district": c[5] if len(c) > 5 else "",
+                 "status":   c[6] if len(c) > 6 else ""}
+                for c in rows if len(c) >= 5]
+
+    return {
+        **scalar,
+        "filings":     filing_rows,          # already dicts with "url" field
+        "filings_due": shape_due(due_rows),
+        "complaints":  comp_rows,            # already dicts with "url" field
+        "campaigns":   shape_campaigns(camp_rows),
+    }
+
+
+async def scrape_contacts_main(chambers: list[str] | None = None) -> None:
+    """Scrape contact and detail data for every candidate that has a committee.
+
+    Reads both master CSVs (legislative + statewide) produced by the main
+    scraper modes.  For each unique committee name it:
+        1. Searches CommitteeSearch.aspx to find the internal OrgID.
+        2. Navigates to CandidateDetail.aspx?OrgID=<id>&Type=CO.
+        3. Extracts all available fields via extract_candidate_detail().
+        4. Writes results to data/tracer_2026_contacts.csv.
+
+    De-duplicates by committee name so shared committees are only fetched
+    once.  Candidates without a committee name ("None") are skipped — they
+    rarely have contact info registered in TRACER.
+
+    Args:
+        chambers: Optional list of chamber names to restrict scraping, e.g.
+                  ["House"], ["Senate", "Statewide"].  None = all chambers.
+                  Valid values: "House", "Senate", "Statewide".
+
+    Run with:
+        python3 scraper.py --contacts                   # all chambers
+        python3 scraper.py --contacts House             # House only
+        python3 scraper.py --contacts Senate Statewide  # multiple chambers
+    """
+    import json as _json
+
+    # Normalise chamber filter for case-insensitive comparison
+    chamber_filter: set[str] | None = (
+        {c.strip().title() for c in chambers} if chambers else None
+    )
+    if chamber_filter:
+        print(f"  Chamber filter: {', '.join(sorted(chamber_filter))}")
+
+    # ------------------------------------------------------------------
+    # Collect all candidates from both master CSVs
+    # ------------------------------------------------------------------
+    all_rows: list[dict] = []
+    for path in (OUTPUT_FILE, STATEWIDE_OUTPUT_FILE):
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                all_rows.extend(csv.DictReader(f))
+        else:
+            print(f"  ⚠  Not found, skipping: {path.name}")
+
+    if not all_rows:
+        print("⚠  No candidate data found — run the main scraper first.")
+        return
+
+    # Apply chamber filter before de-duplication
+    if chamber_filter:
+        all_rows = [r for r in all_rows if r.get("Chamber", "").strip() in chamber_filter]
+        if not all_rows:
+            print(f"⚠  No candidates found for chamber(s): {', '.join(sorted(chamber_filter))}")
+            return
+
+    # ------------------------------------------------------------------
+    # De-duplicate: one scrape per unique committee name
+    # ------------------------------------------------------------------
+    seen:    set[str]   = set()
+    targets: list[dict] = []   # representative row per unique committee
+    skipped: int        = 0
+
+    for row in all_rows:
+        comm = (row.get("CommitteeName") or "").strip()
+        if not comm or comm.lower() == "none":
+            skipped += 1
+            continue
+        if comm not in seen:
+            seen.add(comm)
+            targets.append(row)
+
+    print(f"  {len(all_rows)} total candidates")
+    print(f"  {len(targets)} unique committees to scrape  "
+          f"({skipped} skipped — no committee name)\n")
+
+    results: list[dict] = []
+    errors:  list[dict] = []
+
+    # ------------------------------------------------------------------
+    # Playwright scrape loop
+    # ------------------------------------------------------------------
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        page    = await (await browser.new_context()).new_page()
+
+        for i, row in enumerate(targets):
+            comm = row["CommitteeName"].strip()
+            print(f"  [{i+1:3d}/{len(targets)}] {comm}...", end="", flush=True)
+
+            try:
+                org_id = await get_org_id_for_committee(page, comm)
+                if not org_id:
+                    print(" ⚠  OrgID not found")
+                    errors.append({"committee": comm, "error": "OrgID not found"})
+                    continue
+
+                await page.goto(f"{CONTACT_DETAIL_BASE}?OrgID={org_id}&Type=CO")
+                await page.wait_for_load_state("networkidle")
+                detail = await extract_candidate_detail(page)
+
+                results.append({
+                    # Source identifiers
+                    "CommitteeName":       comm,
+                    "CandName":            row.get("CandName", ""),
+                    "DistrictLabel":       row.get("DistrictLabel", ""),
+                    # IDs
+                    "OrgID":               detail["org_id"],
+                    "CandidateID":         detail["candidate_id"],
+                    "CommitteeID":         detail["committee_id"],
+                    # Candidate info
+                    "CandFullName":        detail["cand_name"],
+                    "CandMailAddress":     detail["cand_mail_address"],
+                    "CandStatus":          detail["cand_status"],
+                    "CampaignStatus":      detail["campaign_status"],
+                    "Phone":               detail["cand_phone"] or detail["comm_phone"],
+                    "CandFax":             detail["cand_fax"],
+                    "DateAffidavitFiled":  detail["date_affidavit_filed"],
+                    "Email":               detail["email"],
+                    "Jurisdiction":        detail["jurisdiction"],
+                    "Web":                 detail["web"],
+                    "Party":               detail["party"],
+                    "VSL":                 detail["vsl"],
+                    "Office":              detail["office"],
+                    # Committee info
+                    "CommName":            detail["comm_name"],
+                    "CommType":            detail["comm_type"],
+                    "CommPhysAddress":     detail["comm_phys_address"],
+                    "CommMailAddress":     detail["comm_mail_address"],
+                    "CommStatus":          detail["comm_status"],
+                    "DateRegistered":      detail["date_registered"],
+                    "DateTerminated":      detail["date_terminated"],
+                    "CommPhone":           detail["comm_phone"],
+                    "CommFax":             detail["comm_fax"],
+                    "CommWeb":             detail["comm_web"],
+                    "Purpose":             detail["purpose"],
+                    # Agents
+                    "RegisteredAgent":     detail["registered_agent"],
+                    "AgentPhone":          detail["agent_phone"],
+                    "AgentEmail":          detail["agent_email"],
+                    "DFA":                 detail["dfa"],
+                    "DFAPhone":            detail["dfa_phone"],
+                    "DFAEmail":            detail["dfa_email"],
+                    # Financial summary
+                    "FinAsOf":             detail["fin_as_of"],
+                    "FinPeriodEnd":        detail["fin_period_end"],
+                    "FinFiledDate":        detail["fin_filed_date"],
+                    "ElectionCycle":       detail["election_cycle"],
+                    "CandExpenditures":    detail["cand_expenditures"],
+                    "BeginningBalance":    detail["beginning_balance"],
+                    "TotalContributions":  detail["total_contributions"],
+                    "TotalLoansReceived":  detail["total_loans_received"],
+                    "TotalExpenditures":   detail["total_expenditures"],
+                    "TotalLoansRepaid":    detail["total_loans_repaid"],
+                    "EndingBalance":       detail["ending_balance"],
+                    "NonMonContributions": detail["non_mon_contributions"],
+                    "NonMonExpenditures":  detail["non_mon_expenditures"],
+                    # Tables (JSON)
+                    "ComplaintCount":      len(detail["complaints"]),
+                    "ComplaintsJSON":      _json.dumps(detail["complaints"]),
+                    "FilingsJSON":         _json.dumps(detail["filings"]),
+                    "FilingsDueJSON":      _json.dumps(detail["filings_due"]),
+                    "CampaignsJSON":       _json.dumps(detail["campaigns"]),
+                })
+
+                print(
+                    f" ✓  web={detail['web'] or '—'} | "
+                    f"complaints={len(detail['complaints'])} | "
+                    f"filings={len(detail['filings'])}"
+                )
+
+            except Exception as exc:
+                print(f" ERROR: {exc}")
+                errors.append({"committee": comm, "error": str(exc)})
+                # Attempt to recover browser to a known-good page
+                try:
+                    await page.goto(COMMITTEE_SEARCH_URL)
+                    await page.wait_for_load_state("networkidle")
+                except Exception:
+                    pass
+
+            await page.wait_for_timeout(REQUEST_DELAY_MS)
+
+        await browser.close()
+
+    # ------------------------------------------------------------------
+    # Write contacts CSV
+    # ------------------------------------------------------------------
+    if results:
+        fieldnames = [
+            # Source identifiers
+            "CommitteeName", "CandName", "DistrictLabel",
+            # IDs
+            "OrgID", "CandidateID", "CommitteeID",
+            # Candidate info
+            "CandFullName", "CandMailAddress", "CandStatus", "CampaignStatus",
+            "Phone", "CandFax", "DateAffidavitFiled", "Email",
+            "Jurisdiction", "Web", "Party", "VSL", "Office",
+            # Committee info
+            "CommName", "CommType", "CommPhysAddress", "CommMailAddress",
+            "CommStatus", "DateRegistered", "DateTerminated",
+            "CommPhone", "CommFax", "CommWeb", "Purpose",
+            # Agents
+            "RegisteredAgent", "AgentPhone", "AgentEmail",
+            "DFA", "DFAPhone", "DFAEmail",
+            # Financial summary
+            "FinAsOf", "FinPeriodEnd", "FinFiledDate", "ElectionCycle",
+            "CandExpenditures", "BeginningBalance", "TotalContributions",
+            "TotalLoansReceived", "TotalExpenditures", "TotalLoansRepaid",
+            "EndingBalance", "NonMonContributions", "NonMonExpenditures",
+            # Tables (JSON)
+            "ComplaintCount", "ComplaintsJSON", "FilingsJSON",
+            "FilingsDueJSON", "CampaignsJSON",
+        ]
+        with open(CONTACTS_OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(results)
+        print(f"\n✓  Wrote {len(results)} contact records → {CONTACTS_OUTPUT_FILE}")
+    else:
+        print("\n⚠  No contact records collected.")
+
+    if errors:
+        print(f"\n⚠  {len(errors)} committee(s) failed:")
+        for e in errors:
+            print(f"   {e['committee']}: {e['error']}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -672,5 +1293,11 @@ if __name__ == "__main__":
         asyncio.run(_discover())
     elif "--statewide" in sys.argv:
         asyncio.run(scrape_statewide_main())
+    elif "--contacts" in sys.argv:
+        # Collect any positional args after --contacts as chamber names.
+        # e.g. "--contacts House Senate" → ["House", "Senate"]
+        idx = sys.argv.index("--contacts")
+        extra = [a for a in sys.argv[idx + 1:] if not a.startswith("--")]
+        asyncio.run(scrape_contacts_main(chambers=extra or None))
     else:
         asyncio.run(main())

@@ -30,7 +30,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from flask import Flask, abort, g, render_template, send_from_directory
+from flask import Flask, abort, g, jsonify, render_template, request, send_from_directory
 
 # Import pure formatting/helper functions from build.py so templates can use
 # them as Jinja2 filters without duplicating logic.
@@ -67,6 +67,145 @@ app.jinja_env.filters["fmt_label"] = _fmt_label
 # burn_rate in build.py takes (spent, raised) but the template passes them as
 # (raised, spent), so we swap the argument order here with a lambda.
 app.jinja_env.filters["burn_rate"] = lambda raised, spent: _burn_rate(spent, raised)
+# from_json: parse a JSON string stored in the DB back into a Python object so
+# templates can iterate over it with {% for item in cand.complaints_json | from_json %}
+app.jinja_env.filters["from_json"] = lambda s: json.loads(s) if s else []
+
+
+# ---------------------------------------------------------------------------
+# Chart data helpers
+# ---------------------------------------------------------------------------
+
+def _qsort_key(label: str) -> tuple:
+    """Sort key for "YYYY-Q#" quarter strings, e.g. ("2024", "Q1") → (2024, 1)."""
+    parts = label.split("-")
+    year = int(parts[0]) if parts[0].isdigit() else 0
+    q    = int(parts[1][1]) if len(parts) > 1 and parts[1].startswith("Q") else 0
+    return (year, q)
+
+
+def _candidate_chart_data(cand) -> dict:
+    """Return chart-ready raised/spent arrays for the candidate detail page.
+
+    Args:
+        cand: sqlite3.Row with quarters_raised_json and quarters_spent_json columns.
+
+    Returns:
+        { "labels": [...], "raised": [...], "spent": [...] }
+        All lists are in chronological quarter order.
+        Returns empty dict if no quarterly data is stored.
+    """
+    raised_q = json.loads(cand["quarters_raised_json"] or "{}") if cand["quarters_raised_json"] else {}
+    spent_q  = json.loads(cand["quarters_spent_json"]  or "{}") if cand["quarters_spent_json"]  else {}
+    if not raised_q and not spent_q:
+        return {}
+    all_keys = sorted(set(raised_q) | set(spent_q), key=_qsort_key)
+
+    # Trim leading quarters where both raised and spent are zero
+    start = next(
+        (i for i, k in enumerate(all_keys)
+         if raised_q.get(k, 0.0) > 0 or spent_q.get(k, 0.0) > 0),
+        len(all_keys),
+    )
+    all_keys = all_keys[start:]
+    if not all_keys:
+        return {}
+
+    return {
+        "labels": all_keys,
+        "raised": [round(raised_q.get(k, 0.0), 2) for k in all_keys],
+        "spent":  [round(spent_q.get(k, 0.0),  2) for k in all_keys],
+    }
+
+
+_CHART_TOP_N = 3          # max candidates shown per party in the race timeline chart
+_INDIE_THRESHOLD = 4      # hide non-D/R candidates when total candidates exceeds this
+
+_MAJOR_PARTIES = {"Democratic", "Republican"}
+
+
+def _race_chart_data(candidates) -> dict:
+    """Return chart-ready per-candidate cumulative fundraising for the race page.
+
+    Only the top N candidates by total raised are included per party.
+    Independent / third-party candidates are hidden when the total number of
+    candidates in the race exceeds _INDIE_THRESHOLD, to keep the chart readable
+    in busy primaries while still showing them in small fields.
+
+    Args:
+        candidates: List of sqlite3.Row objects for all candidates in the race,
+                    expected to already be ordered by raised DESC.
+
+    Returns:
+        {
+          "labels": ["2024-Q1", "2024-Q2", ...],   # union of all quarters, sorted
+          "series": [
+            { "name": "Jane Smith", "party": "Democratic", "data": [0, 500, 1200, ...] },
+            ...
+          ]
+        }
+        Returns empty dict if no candidate has quarterly data.
+    """
+    total_candidates = len(candidates)
+    hide_independents = total_candidates > _INDIE_THRESHOLD
+
+    # Collect quarterly data for every candidate, keeping track of how many
+    # we've already accepted per party so we can cap at _CHART_TOP_N.
+    # candidates is already ordered by raised DESC, so the first N encountered
+    # per party are the top N fundraisers.
+    party_count: dict[str, int] = {}
+    per_cand = []
+    all_keys: set = set()
+
+    for c in candidates:
+        party = c["party"] or "Other"
+        # Skip independents / third-party when the field is large
+        if hide_independents and party not in _MAJOR_PARTIES:
+            continue
+        count = party_count.get(party, 0)
+        if count >= _CHART_TOP_N:
+            continue  # already have enough candidates for this party
+        q = json.loads(c["quarters_raised_json"] or "{}") if c["quarters_raised_json"] else {}
+        if not q:
+            continue  # no quarterly data — skip rather than waste a slot
+        party_count[party] = count + 1
+        per_cand.append((c, q))
+        all_keys |= set(q.keys())
+
+    if not all_keys:
+        return {}
+
+    labels = sorted(all_keys, key=_qsort_key)
+
+    # Trim leading quarters where no candidate has any contribution in that quarter
+    start = next(
+        (i for i, k in enumerate(labels)
+         if any(q.get(k, 0.0) > 0 for _, q in per_cand)),
+        len(labels),
+    )
+    labels = labels[start:]
+    if not labels:
+        return {}
+
+    series = []
+    for c, q in per_cand:
+        cumulative = []
+        running = 0.0
+        for k in labels:
+            running += q.get(k, 0.0)
+            cumulative.append(round(running, 2))
+        if running == 0.0:
+            continue
+        series.append({
+            "name":   _fmt_name(c["name"]),
+            "party":  c["party"] or "",
+            "status": c["status"] or "Active",
+            "data":   cumulative,
+        })
+
+    if not series:
+        return {}
+    return {"labels": labels, "series": series}
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +491,8 @@ def race_page(slug):
         cities = []
         subtitle = f"Statewide &mdash; Colorado {CURRENT_YEAR}"
 
+    race_chart = _race_chart_data(candidates)
+
     return render_template(
         "race.html",
         candidates=candidates,
@@ -361,6 +502,7 @@ def race_page(slug):
         chamber=chamber,
         district=district,
         is_legislative=is_legislative,
+        race_chart=json.dumps(race_chart, separators=(",", ":")),
         active="",  # no nav link is highlighted for race pages
     )
 
@@ -387,7 +529,243 @@ def candidate_page(slug):
     ).fetchone()
     if not cand:
         abort(404)
-    return render_template("candidate.html", cand=cand, active="")
+    cand_chart = _candidate_chart_data(cand)
+    return render_template(
+        "candidate.html",
+        cand=cand,
+        cand_chart=json.dumps(cand_chart, separators=(",", ":")),
+        active="",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Donor search + detail
+# ---------------------------------------------------------------------------
+
+@app.route("/search/donors")
+def search_donors():
+    """Return JSON donor matches for typeahead and the donor search page.
+
+    Query params:
+      q        — search string, matched as infix against donor_last + donor_first
+                 via the FTS5 donor_fts index (falls back to LIKE prefix if FTS
+                 is unavailable).
+      year     — optional 4-digit year filter (e.g. "2026")
+      type     — optional donor_type filter ("I", "B", "C", "L", "O")
+      page     — 1-based page number (default 1)
+      per_page — results per page (default 25, max 100)
+
+    Returns JSON:
+      { results: [{donor_last, donor_first, donor_city, donor_state, n, total}],
+        page, per_page, has_more }
+    """
+    q        = request.args.get("q",        "").strip().upper()
+    year     = request.args.get("year",     "").strip()
+    dtype    = request.args.get("type",     "").strip().upper()
+    try:
+        page     = max(1, int(request.args.get("page",     1)))
+        per_page = min(100, max(1, int(request.args.get("per_page", 25))))
+    except ValueError:
+        page, per_page = 1, 25
+
+    if len(q) < 2:
+        return jsonify({"results": [], "page": page, "per_page": per_page, "has_more": False})
+
+    db     = get_db()
+    offset = (page - 1) * per_page
+    fetch  = per_page + 1  # fetch one extra to determine has_more
+
+    # Build optional extra WHERE clauses for year and donor_type filters
+    extra_clauses = []
+    extra_params  = []
+    if year:
+        extra_clauses.append("strftime('%Y', date) = ?")
+        extra_params.append(year)
+    if dtype:
+        extra_clauses.append("donor_type = ?")
+        extra_params.append(dtype)
+    extra_sql = (" AND " + " AND ".join(extra_clauses)) if extra_clauses else ""
+
+    # Try FTS5 first (infix search); fall back to prefix LIKE if not available
+    try:
+        # FTS5 MATCH uses the query as a prefix term by default; appending '*'
+        # ensures prefix matching even for mid-string tokens.
+        fts_term = q.replace('"', '""') + "*"
+        rows = db.execute(
+            f"""SELECT c.donor_last, c.donor_first, c.donor_city, c.donor_state,
+                       COUNT(*) AS n, SUM(c.amount) AS total
+                FROM donor_fts f
+                JOIN contributions c ON c.id = f.rowid
+                WHERE donor_fts MATCH ?{extra_sql}
+                GROUP BY c.donor_last, c.donor_first, c.donor_city, c.donor_state
+                ORDER BY total DESC
+                LIMIT ? OFFSET ?""",
+            (fts_term, *extra_params, fetch, offset),
+        ).fetchall()
+    except Exception:
+        # FTS5 table may not exist yet (pre-ingest); fall back to LIKE prefix
+        parts = q.split(None, 1)
+        if len(parts) == 1:
+            rows = db.execute(
+                f"""SELECT donor_last, donor_first, donor_city, donor_state,
+                           COUNT(*) AS n, SUM(amount) AS total
+                    FROM contributions
+                    WHERE donor_last LIKE ? || '%'{extra_sql}
+                    GROUP BY donor_last, donor_first, donor_city, donor_state
+                    ORDER BY total DESC
+                    LIMIT ? OFFSET ?""",
+                (parts[0], *extra_params, fetch, offset),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                f"""SELECT donor_last, donor_first, donor_city, donor_state,
+                           COUNT(*) AS n, SUM(amount) AS total
+                    FROM contributions
+                    WHERE donor_last LIKE ? || '%'
+                      AND donor_first LIKE ? || '%'{extra_sql}
+                    GROUP BY donor_last, donor_first, donor_city, donor_state
+                    ORDER BY total DESC
+                    LIMIT ? OFFSET ?""",
+                (parts[0], parts[1], *extra_params, fetch, offset),
+            ).fetchall()
+
+    has_more = len(rows) > per_page
+    return jsonify({
+        "results":  [dict(r) for r in rows[:per_page]],
+        "page":     page,
+        "per_page": per_page,
+        "has_more": has_more,
+    })
+
+
+@app.route("/donors/")
+def donor_page():
+    """Donor search landing page and individual donor detail page.
+
+    Search mode  — /donors/?q=Smith
+        Renders a search page with a query box and results list.
+        Uses the same /search/donors API internally.
+
+    Detail mode  — /donors/?last=SMITH&first=JOHN&city=DENVER&state=CO
+        Shows a single donor's full contribution history.
+        Returns 404 if no contributions match.
+    """
+    q     = request.args.get("q",     "").strip()
+    last  = request.args.get("last",  "").strip().upper()
+    first = request.args.get("first", "").strip().upper()
+    city  = request.args.get("city",  "").strip().upper()
+    state = request.args.get("state", "").strip().upper()
+
+    db = get_db()
+
+    # ── Search mode ────────────────────────────────────────────────────────
+    if q and not last:
+        year  = request.args.get("year",  "").strip()
+        dtype = request.args.get("type",  "").strip().upper()
+        try:
+            page     = max(1, int(request.args.get("page", 1)))
+            per_page = min(100, max(1, int(request.args.get("per_page", 25))))
+        except ValueError:
+            page, per_page = 1, 25
+
+        results  = []
+        has_more = False
+        if len(q) >= 2:
+            # Reuse the search_donors logic directly against the DB
+            import urllib.request as _ur
+            # Call the internal helper rather than making an HTTP round-trip
+            extra_clauses, extra_params = [], []
+            if year:
+                extra_clauses.append("strftime('%Y', date) = ?")
+                extra_params.append(year)
+            if dtype:
+                extra_clauses.append("donor_type = ?")
+                extra_params.append(dtype)
+            extra_sql = (" AND " + " AND ".join(extra_clauses)) if extra_clauses else ""
+            offset = (page - 1) * per_page
+            fetch  = per_page + 1
+            qu = q.strip().upper()
+            try:
+                fts_term = qu.replace('"', '""') + "*"
+                rows = db.execute(
+                    f"""SELECT c.donor_last, c.donor_first, c.donor_city, c.donor_state,
+                               COUNT(*) AS n, SUM(c.amount) AS total
+                        FROM donor_fts f
+                        JOIN contributions c ON c.id = f.rowid
+                        WHERE donor_fts MATCH ?{extra_sql}
+                        GROUP BY c.donor_last, c.donor_first, c.donor_city, c.donor_state
+                        ORDER BY total DESC
+                        LIMIT ? OFFSET ?""",
+                    (fts_term, *extra_params, fetch, offset),
+                ).fetchall()
+            except Exception:
+                parts = qu.split(None, 1)
+                if len(parts) == 1:
+                    rows = db.execute(
+                        f"""SELECT donor_last, donor_first, donor_city, donor_state,
+                                   COUNT(*) AS n, SUM(amount) AS total
+                            FROM contributions
+                            WHERE donor_last LIKE ? || '%'{extra_sql}
+                            GROUP BY donor_last, donor_first, donor_city, donor_state
+                            ORDER BY total DESC
+                            LIMIT ? OFFSET ?""",
+                        (parts[0], *extra_params, fetch, offset),
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        f"""SELECT donor_last, donor_first, donor_city, donor_state,
+                                   COUNT(*) AS n, SUM(amount) AS total
+                            FROM contributions
+                            WHERE donor_last LIKE ? || '%'
+                              AND donor_first LIKE ? || '%'{extra_sql}
+                            GROUP BY donor_last, donor_first, donor_city, donor_state
+                            ORDER BY total DESC
+                            LIMIT ? OFFSET ?""",
+                        (parts[0], parts[1], *extra_params, fetch, offset),
+                    ).fetchall()
+            has_more = len(rows) > per_page
+            results  = [dict(r) for r in rows[:per_page]]
+
+        return render_template(
+            "donor_search.html",
+            q=q, year=year if q else "", dtype=dtype if q else "",
+            results=results, page=page, per_page=per_page, has_more=has_more,
+            active="",
+        )
+
+    # ── Detail mode ────────────────────────────────────────────────────────
+    if not last:
+        # No params at all — show empty search page
+        return render_template("donor_search.html", q="", year="", dtype="",
+                               results=[], page=1, per_page=25, has_more=False,
+                               active="")
+
+    contribs = db.execute(
+        """SELECT * FROM contributions
+           WHERE donor_last = ? AND donor_first = ?
+             AND donor_city = ? AND donor_state = ?
+           ORDER BY date DESC""",
+        (last, first, city, state),
+    ).fetchall()
+
+    if not contribs:
+        abort(404)
+
+    total = sum(r["amount"] for r in contribs)
+    committee_count = len({r["committee_name"] for r in contribs})
+
+    display_name = " ".join(p.title() for p in [first, last] if p) or last.title()
+    display_loc  = (city.title() + ", " + state) if city else state
+
+    return render_template(
+        "donor.html",
+        donor_name=display_name,
+        donor_location=display_loc,
+        total=total,
+        committee_count=committee_count,
+        contributions=contribs,
+        active="",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,79 @@
     </div>
   {% endif %}
 
+  {# Fundraising timeline line chart #}
+  {% if race_chart and race_chart != '{}' %}
+  <div class="section-label">Fundraising Timeline</div>
+  <div style="position:relative;height:280px;margin-bottom:24px;">
+    <canvas id="raceChart"></canvas>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script>
+  (function () {
+    var rc = {{ race_chart | safe }};
+    if (!rc.labels || !rc.series || !rc.series.length) return;
+
+    // Assign colors: D=blue, R=red, other=grey.
+    // Multiple candidates of the same party get different opacities.
+    var partyCount = { D: 0, R: 0, O: 0 };
+    var datasets = rc.series.map(function (s) {
+      var pkey = s.party === 'Democratic' ? 'D' : s.party === 'Republican' ? 'R' : 'O';
+      partyCount[pkey]++;
+      var baseColor = pkey === 'D' ? '59,130,246'
+                    : pkey === 'R' ? '239,68,68'
+                    :                '100,116,139';
+      // Alternate between full and 60% opacity for same-party candidates
+      var alpha = (partyCount[pkey] % 2 === 1) ? '1' : '0.55';
+      var color = 'rgba(' + baseColor + ',' + alpha + ')';
+      var inactive = s.status && s.status !== 'Active' && s.status !== '';
+      return {
+        label: s.name + (inactive ? ' (inactive)' : ''),
+        data: s.data,
+        borderColor: color,
+        backgroundColor: 'transparent',
+        borderWidth: inactive ? 1 : 2,
+        borderDash: inactive ? [4, 3] : [],
+        tension: 0.35,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+      };
+    });
+
+    new Chart(document.getElementById('raceChart'), {
+      type: 'line',
+      data: { labels: rc.labels, datasets: datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'top', labels: { font: { size: 11 }, boxWidth: 16 } },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                return ' ' + ctx.dataset.label + ': $' + ctx.raw.toLocaleString();
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return v >= 1000000 ? '$' + (v / 1000000).toFixed(1) + 'M'
+                     : v >= 1000    ? '$' + (v / 1000).toFixed(0) + 'k'
+                     :                '$' + v;
+              },
+            },
+          },
+        },
+      },
+    });
+  }());
+  </script>
+  {% endif %}
+
   {# City pills (legislative only) #}
   {% if cities %}
     <div class="section-label">Communities in this District</div>

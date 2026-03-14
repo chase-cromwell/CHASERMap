@@ -2,6 +2,128 @@
 
 {% block title %}{{ cand.name | fmt_name }} &mdash; Colorado 2026{% endblock %}
 
+{% block head %}
+<style>
+/* --- Burn-rate tooltip -------------------------------------------------- */
+.lbl-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  color: #475569;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: default;
+  position: relative;
+}
+.info-tip:hover .tip-text {
+  display: block;
+}
+.tip-text {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e293b;
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 10;
+}
+.tip-text::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: #1e293b;
+}
+
+/* --- Complaints -------------------------------------------------------- */
+.complaints-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px; }
+.complaint-card {
+  border: 1px solid #fca5a5;
+  background: #fff5f5;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.complaint-card.closed {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+.complaint-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.complaint-case { font-weight: 600; font-size: 13px; color: #1e293b; }
+.complaint-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.status-closed { background: #dcfce7; color: #166534; }
+.status-open   { background: #fee2e2; color: #991b1b; }
+.complaint-subject { font-size: 13px; color: #374151; margin-bottom: 4px; }
+.complaint-meta { font-size: 11px; color: #64748b; }
+
+/* --- Filings ----------------------------------------------------------- */
+.filings-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 24px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+.filings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.filings-table th {
+  background: #f8fafc;
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.filings-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+  vertical-align: top;
+}
+.filings-table tr:last-child td { border-bottom: none; }
+.filings-table a { color: #2563eb; text-decoration: none; }
+.filings-table a:hover { text-decoration: underline; }
+.filing-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+}
+.filing-status.filed { background: #dcfce7; color: #166534; }
+.filing-status.late  { background: #fee2e2; color: #991b1b; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container">
   <a class="back-link" href="/races/{{ cand.race_slug }}/">&larr; Back to {{ cand.label | fmt_label }}</a>
@@ -72,7 +194,14 @@
       <div class="val">{{ cand.loans | fmt_dollars }}</div>
     </div>
     <div class="stat-cell">
-      <div class="lbl">Burn Rate</div>
+      <div class="lbl">
+        <span class="lbl-wrap">
+          Burn Rate
+          <span class="info-tip">i
+            <span class="tip-text">Total Spent &divide; Total Raised &times; 100</span>
+          </span>
+        </span>
+      </div>
       <div class="val">{{ burn }}</div>
     </div>
     <div class="stat-cell">
@@ -81,20 +210,244 @@
     </div>
   </div>
 
-  {# TRACER link #}
+  {# ------------------------------------------------------------------ #}
+  {# Quarterly fundraising bar chart                                   #}
+  {# ------------------------------------------------------------------ #}
+  {% if cand_chart and cand_chart != '{}' %}
+  <div class="section-label">Fundraising by Quarter</div>
+  <div style="position:relative;height:260px;margin-bottom:24px;">
+    <canvas id="quarterChart"></canvas>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script>
+  (function () {
+    var d = {{ cand_chart | safe }};
+    if (!d.labels || !d.labels.length) return;
+    new Chart(document.getElementById('quarterChart'), {
+      type: 'bar',
+      data: {
+        labels: d.labels,
+        datasets: [
+          {
+            label: 'Raised',
+            data: d.raised,
+            backgroundColor: 'rgba(59,130,246,0.75)',
+            borderColor: '#3b82f6',
+            borderWidth: 1,
+            borderRadius: 3,
+          },
+          {
+            label: 'Spent',
+            data: d.spent,
+            backgroundColor: 'rgba(249,115,22,0.75)',
+            borderColor: '#f97316',
+            borderWidth: 1,
+            borderRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'top', labels: { font: { size: 12 } } },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                return ' ' + ctx.dataset.label + ': $' + ctx.raw.toLocaleString();
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return v >= 1000000 ? '$' + (v / 1000000).toFixed(1) + 'M'
+                     : v >= 1000    ? '$' + (v / 1000).toFixed(0) + 'k'
+                     :                '$' + v;
+              },
+            },
+          },
+        },
+      },
+    });
+  }());
+  </script>
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# Contact Information                                               #}
+  {# ------------------------------------------------------------------ #}
+  {% if cand.phone or cand.email or cand.web %}
+  <div class="section-label">Contact</div>
+  <div class="detail-row">
+    {% if cand.phone %}
+    <div class="detail-item">
+      <div class="dl">Phone</div>
+      <div class="dv">{{ cand.phone }}</div>
+    </div>
+    {% endif %}
+    {% if cand.email %}
+    <div class="detail-item">
+      <div class="dl">Email</div>
+      <div class="dv"><a href="mailto:{{ cand.email }}">{{ cand.email }}</a></div>
+    </div>
+    {% endif %}
+    {% if cand.web_href %}
+    <div class="detail-item">
+      <div class="dl">Website</div>
+      <div class="dv">
+        <a href="{{ cand.web_href }}" target="_blank" rel="noopener noreferrer">
+          {{ cand.web or cand.web_href }}
+        </a>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# TRACER IDs                                                         #}
+  {# ------------------------------------------------------------------ #}
+  {% if cand.tracer_org_id or cand.tracer_cand_id or cand.tracer_comm_id %}
+  <div class="section-label">TRACER Records</div>
+  <div class="detail-row">
+    {% if cand.tracer_cand_id %}
+    <div class="detail-item">
+      <div class="dl">Candidate ID</div>
+      <div class="dv">{{ cand.tracer_cand_id }}</div>
+    </div>
+    {% endif %}
+    {% if cand.tracer_comm_id %}
+    <div class="detail-item">
+      <div class="dl">Committee ID</div>
+      <div class="dv">{{ cand.tracer_comm_id }}</div>
+    </div>
+    {% endif %}
+    {% if cand.date_filed %}
+    <div class="detail-item">
+      <div class="dl">Date Filed</div>
+      <div class="dv">{{ cand.date_filed }}</div>
+    </div>
+    {% endif %}
+    {% if cand.date_terminated %}
+    <div class="detail-item">
+      <div class="dl">Date Terminated</div>
+      <div class="dv" style="color:#dc2626;">{{ cand.date_terminated }}</div>
+    </div>
+    {% endif %}
+  </div>
+  {% if cand.tracer_org_id %}
+  <div class="btn-row" style="margin-top:4px;">
+    <a class="action-btn secondary"
+       href="https://tracer.sos.colorado.gov/PublicSite/SearchPages/CandidateDetail.aspx?OrgID={{ cand.tracer_org_id }}&Type=CO"
+       target="_blank" rel="noopener">&#8599; View Full TRACER Record</a>
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# Filing History  (shown before complaints)                          #}
+  {# ------------------------------------------------------------------ #}
+  {% set filings = cand.filings_json | from_json %}
+  {% if filings %}
+  <div class="section-label">Recent Filings</div>
+  <div class="filings-table-wrap">
+    <table class="filings-table">
+      <thead>
+        <tr>
+          <th>Filing</th>
+          <th>Period End</th>
+          <th>Filed On</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in filings %}
+        <tr>
+          <td>
+            {% if f.href %}
+              <a href="{{ f.href }}" target="_blank" rel="noopener">{{ f.description or '—' }}</a>
+            {% else %}
+              {{ f.description or '—' }}
+            {% endif %}
+          </td>
+          <td>{{ f.period_end or '—' }}</td>
+          <td>{{ f.filed_on or '—' }}</td>
+          <td>
+            <span class="filing-status {% if 'filed' in (f.status | lower) %}filed{% elif 'late' in (f.status | lower) or 'overdue' in (f.status | lower) %}late{% endif %}">
+              {{ f.status or '—' }}
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# Complaints  (open first in red, closed last in grey)               #}
+  {# ------------------------------------------------------------------ #}
+  {% if cand.complaint_count and cand.complaint_count > 0 %}
+  {% set complaints = cand.complaints_json | from_json %}
+  <div class="section-label" style="color:#dc2626;">
+    Complaints ({{ cand.complaint_count }})
+  </div>
+  <div class="complaints-list">
+    {# Render open complaints first #}
+    {% for comp in complaints %}
+    {% set is_closed = ('closed' in comp.status | lower) or ('dismiss' in comp.status | lower) %}
+    {% if not is_closed %}
+    <div class="complaint-card">
+      <div class="complaint-header">
+        <span class="complaint-case">{{ comp.case_number }}</span>
+        <span class="complaint-status status-open">{{ comp.status }}</span>
+      </div>
+      {% if comp.subject %}
+      <div class="complaint-subject">{{ comp.subject }}</div>
+      {% endif %}
+      <div class="complaint-meta">
+        {% if comp.date_filed %}Filed {{ comp.date_filed }}{% endif %}
+        {% if comp.complainant %} &mdash; Complainant: {{ comp.complainant }}{% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {# Render closed complaints last, in grey #}
+    {% for comp in complaints %}
+    {% set is_closed = ('closed' in comp.status | lower) or ('dismiss' in comp.status | lower) %}
+    {% if is_closed %}
+    <div class="complaint-card closed">
+      <div class="complaint-header">
+        <span class="complaint-case">{{ comp.case_number }}</span>
+        <span class="complaint-status status-closed">{{ comp.status }}</span>
+      </div>
+      {% if comp.subject %}
+      <div class="complaint-subject">{{ comp.subject }}</div>
+      {% endif %}
+      <div class="complaint-meta">
+        {% if comp.date_filed %}Filed {{ comp.date_filed }}{% endif %}
+        {% if comp.complainant %} &mdash; Complainant: {{ comp.complainant }}{% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# Show TRACER search link only when we don't have a direct OrgID link above #}
+  {% if not cand.tracer_org_id %}
   {% set tracer_q = (cand.committee or cand.name) | replace(' ', '+') %}
   <div class="btn-row">
     <a class="action-btn secondary"
        href="https://tracer.sos.colorado.gov/PublicSite/SearchPages/CommitteeSearch.aspx?name={{ tracer_q }}"
-       target="_blank" rel="noopener">&#8599; View on TRACER</a>
+       target="_blank" rel="noopener">&#8599; Search TRACER</a>
   </div>
+  {% endif %}
 
-  {# Placeholder for future contact data #}
-  <div class="section-label">Additional Information</div>
-  <div class="coming-soon-box">
-    <div class="cs-icon">&#128279;</div>
-    <p style="font-weight:600;color:#475569;">Web links &amp; contact info</p>
-    <p>Phone, website, and social media links will appear here when available.</p>
-  </div>
 </div>
+
 {% endblock %}
